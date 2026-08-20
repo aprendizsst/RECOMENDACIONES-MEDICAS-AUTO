@@ -699,43 +699,77 @@ function cleanEmailList_(value) {
 function validEmail_(value) { return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(value || '').trim()); }
 
 function authorizePortalServices() {
-  // Ejecutar manualmente una vez desde el editor de Apps Script.
-  // Esto fuerza la autorización de TODOS los servicios usados por la Web App,
-  // incluido UrlFetchApp, necesario para llamar a Gemini.
-  const requiredScopes = [
-    'https://www.googleapis.com/auth/script.external_request',
-    'https://www.googleapis.com/auth/script.send_mail',
-    'https://www.googleapis.com/auth/spreadsheets',
-    'https://www.googleapis.com/auth/drive'
-  ];
+  // EJECUTAR MANUALMENTE desde el IDE de Apps Script una vez después de
+  // cambiar scopes o servicios. NO envolver requireAllScopes() en try/catch:
+  // si falta un permiso, Apps Script debe detener esta ejecución y mostrar
+  // la pantalla de consentimiento.
+  ScriptApp.requireAllScopes(ScriptApp.AuthMode.FULL);
 
-  try {
-    ScriptApp.requireScopes(ScriptApp.AuthMode.FULL, requiredScopes);
-  } catch (_) {
-    // Si requireScopes no abre el flujo en este contexto, las llamadas
-    // siguientes igualmente fuerzan a Apps Script a solicitar autorización.
-  }
+  const probe = testExternalRequestPermission_();
+  const quota = MailApp.getRemainingDailyQuota();
+  const db = getDb_();
+  const rootName = DriveApp.getRootFolder().getName();
 
-  // UrlFetchApp: permiso requerido para Gemini. La URL devuelve 204 y no
-  // transmite información del portal.
-  const fetchProbe = UrlFetchApp.fetch('https://www.google.com/generate_204', {
+  const authInfo = ScriptApp.getAuthorizationInfo(ScriptApp.AuthMode.FULL);
+  const authorizedScopes = authInfo.getAuthorizedScopes() || [];
+
+  const result = {
+    authorized: true,
+    externalRequest: probe.ok,
+    externalResponseCode: probe.responseCode,
+    mailQuota: quota,
+    database: db.getName(),
+    driveRoot: rootName,
+    authorizationStatus: String(authInfo.getAuthorizationStatus()),
+    authorizedScopes: authorizedScopes,
+    message: 'Autorización completa verificada: Gemini/UrlFetchApp, correo, Sheets y Drive.'
+  };
+
+  console.log(JSON.stringify(result));
+  return result;
+}
+
+function testExternalRequestPermission_() {
+  // Llamada mínima y sin datos del portal. Si este método falla con
+  // script.external_request, el problema sigue siendo exclusivamente OAuth.
+  const response = UrlFetchApp.fetch('https://www.google.com/generate_204', {
     method: 'get',
     muteHttpExceptions: true,
     followRedirects: true
   });
+  const code = response.getResponseCode();
+  return { ok: code >= 200 && code < 400, responseCode: code };
+}
 
-  // Correo, Sheets y Drive.
-  const quota = MailApp.getRemainingDailyQuota();
-  const db = getDb_();
-  DriveApp.getRootFolder().getName();
+function testGeminiPermission() {
+  // Prueba manual independiente para el IDE. Ejecuta esta función si quieres
+  // comprobar UrlFetchApp sin consumir una llamada de Gemini.
+  ScriptApp.requireScopes(ScriptApp.AuthMode.FULL, [
+    'https://www.googleapis.com/auth/script.external_request',
+    'https://www.googleapis.com/auth/script.scriptapp'
+  ]);
+  const probe = testExternalRequestPermission_();
+  console.log(JSON.stringify(probe));
+  return probe;
+}
 
-  return {
-    authorized: true,
-    externalRequest: fetchProbe.getResponseCode() >= 200 && fetchProbe.getResponseCode() < 400,
-    mailQuota: quota,
-    database: db.getName(),
-    message: 'Permisos de Gemini, correo, Sheets y Drive autorizados.'
+function getAuthorizationDiagnostics() {
+  const requiredScopes = [
+    'https://www.googleapis.com/auth/script.external_request',
+    'https://www.googleapis.com/auth/script.send_mail',
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/drive',
+    'https://www.googleapis.com/auth/script.scriptapp'
+  ];
+  const info = ScriptApp.getAuthorizationInfo(ScriptApp.AuthMode.FULL, requiredScopes);
+  const result = {
+    status: String(info.getAuthorizationStatus()),
+    authorizedScopes: info.getAuthorizedScopes() || [],
+    authorizationUrl: info.getAuthorizationUrl() || '',
+    requiredScopes: requiredScopes
   };
+  console.log(JSON.stringify(result));
+  return result;
 }
 
 function mailStatus_(user) {
