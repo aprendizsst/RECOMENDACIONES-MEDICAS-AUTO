@@ -123,12 +123,58 @@
         const result = await SSTBackend.call('emailHistory', { limit: 200 });
         if (Array.isArray(result.items)) state.emailHistory = result.items;
       } catch (error) { console.warn('Historial remoto:', error); }
+      await refreshBackendDiagnostics();
     }
     if (!state.selectedDocId && state.documents[0]) state.selectedDocId = state.documents[0].id;
     if (!state.selectedOriginalId && state.documents[0]) state.selectedOriginalId = state.documents[0].id;
     if (!state.selectedOutputId && state.outputs[0]) state.selectedOutputId = state.outputs[0].id;
     await renderAll();
     await renderAssetSettings();
+  }
+
+  async function refreshBackendDiagnostics() {
+    if (!state.backendOnline || state.localMode) return;
+    try {
+      const mail = await SSTBackend.call('mailStatus', {}, { timeout: 30000 });
+      $('emailBackendBadge').textContent = mail.ready ? `Correo listo · cupo ${mail.remainingQuota ?? '—'}` : `Correo sin cupo · ${mail.remainingQuota ?? 0}`;
+      $('emailBackendBadge').className = `status-badge ${mail.ready ? 'success' : 'warn'}`;
+      $('emailBackendBadge').title = `${mail.service || 'MailApp'}${mail.sender ? ' · ' + mail.sender : ''}${mail.detail ? ' · ' + mail.detail : ''}`;
+    } catch (error) {
+      $('emailBackendBadge').textContent = 'Correo requiere autorización';
+      $('emailBackendBadge').className = 'status-badge warn';
+      console.warn('Diagnóstico correo:', error);
+    }
+    try {
+      const status = await SSTBackend.call('consecutiveStatus', {}, { timeout: 30000 });
+      $('consecutiveStatusBadge').textContent = `Actual ${status.current ?? 0}`;
+      $('consecutiveStatusBadge').className = 'status-badge success';
+      $('consecutiveStatusDetail').textContent = `${status.spreadsheetName} · ${status.sheetName} · ${status.rowsRead ?? 0} consecutivo(s) válidos leídos · siguiente: ${status.prefix}-${new Date().getFullYear()}-${status.next}`;
+      $('settingsConsecutiveSheet').value = status.sheetName || 'Consecutivos';
+      $('settingsConsecutivePrefix').value = status.prefix || 'SST';
+      if (status.configured && status.spreadsheetId && !$('settingsConsecutiveSpreadsheet').value) {
+        $('settingsConsecutiveSpreadsheet').value = `https://docs.google.com/spreadsheets/d/${status.spreadsheetId}/edit`;
+      }
+    } catch (error) {
+      $('consecutiveStatusBadge').textContent = 'Revisar';
+      $('consecutiveStatusBadge').className = 'status-badge warn';
+      $('consecutiveStatusDetail').textContent = error.message;
+      console.warn('Diagnóstico consecutivos:', error);
+    }
+  }
+
+  async function saveConsecutiveSettings() {
+    if (!state.backendOnline || state.localMode) return toast('Backend requerido','Conecta Apps Script para validar consecutivos.','warn');
+    try {
+      const result = await SSTBackend.call('saveConsecutiveConfig', {
+        spreadsheetUrlOrId: $('settingsConsecutiveSpreadsheet').value.trim(),
+        sheetName: $('settingsConsecutiveSheet').value.trim() || 'Consecutivos',
+        prefix: $('settingsConsecutivePrefix').value.trim() || 'SST'
+      }, { timeout: 60000 });
+      $('consecutiveStatusBadge').textContent = `Actual ${result.current ?? 0}`;
+      $('consecutiveStatusBadge').className = 'status-badge success';
+      $('consecutiveStatusDetail').textContent = `${result.spreadsheetName} · ${result.sheetName} · ${result.rowsRead ?? 0} consecutivo(s) válidos leídos · siguiente: ${result.prefix}-${new Date().getFullYear()}-${result.next}`;
+      toast('Consecutivos conectados', `Se validará contra ${result.spreadsheetName} / ${result.sheetName}.`, 'success', 6500);
+    } catch (error) { toast('No se pudo validar la hoja', error.message, 'error', 8000); }
   }
 
   function isViewActive(view) { const p = document.querySelector(`[data-view-panel="${view}"]`); return !!p?.classList.contains('active'); }
@@ -157,7 +203,7 @@
     $('qualityOcr').textContent = $('toggleOcr').checked ? 'Activo' : 'Desactivado'; $('qualityCache').textContent = 'Activo';
     const recent = state.documents.slice(0,5);
     $('recentDocuments').className = recent.length ? 'recent-list' : 'empty-state compact';
-    $('recentDocuments').innerHTML = recent.length ? recent.map((d) => `<div class="document-item" data-dashboard-doc="${d.id}"><div class="doc-icon">PDF</div><div class="doc-main"><strong>${SSTUtils.escapeHtml(d.data?.nombre || d.fileName)}</strong><small>${SSTUtils.escapeHtml(d.fileName)}</small><em>${d.data?.modo_validacion ? SSTUtils.escapeHtml(d.data.modo_validacion) : 'Respaldo local'}</em></div><span class="mini-status ${d.data?.validado_ia ? 'ai' : ''}"></span></div>`).join('') : '<span>▣</span><strong>No hay documentos cargados</strong><p>Los certificados aparecerán aquí al cargarlos.</p>';
+    $('recentDocuments').innerHTML = recent.length ? recent.map((d) => `<div class="document-item" data-dashboard-doc="${d.id}"><div class="doc-icon">PDF</div><div class="doc-main"><strong>${SSTUtils.escapeHtml(d.data?.nombre || d.fileName)}</strong><small>${SSTUtils.escapeHtml(d.fileName)}</small><em>${d.data?.modo_validacion ? SSTUtils.escapeHtml(d.data.modo_validacion) : 'Respaldo local'}${d.data?.calidad_extraccion ? ` · Calidad ${SSTUtils.escapeHtml(d.data.calidad_extraccion)}` : ''}</em></div><span class="mini-status ${d.data?.validado_ia ? 'ai' : ''}"></span></div>`).join('') : '<span>▣</span><strong>No hay documentos cargados</strong><p>Los certificados aparecerán aquí al cargarlos.</p>';
   }
 
   function documentMatches(d, query) {
@@ -169,7 +215,7 @@
     const query = $('documentSearch')?.value || '';
     const docs = state.documents.filter((d) => documentMatches(d, query));
     $('docListCount').textContent = state.documents.length;
-    $('documentList').innerHTML = docs.length ? docs.map((d) => `<div class="document-item ${d.id === state.selectedDocId ? 'active' : ''}" data-doc-id="${d.id}"><div class="doc-icon">PDF</div><div class="doc-main"><strong>${SSTUtils.escapeHtml(d.data?.nombre || 'Sin nombre')}</strong><small>${SSTUtils.escapeHtml(d.fileName)}</small><em>${d.dirty ? 'Editado · requiere actualizar salida' : (d.data?.validado_ia ? 'IA + respaldo local' : 'Respaldo local')}</em></div><span class="mini-status ${d.data?.validado_ia ? 'ai' : (d.dirty ? 'warn' : '')}"></span></div>`).join('') : '<div class="empty-state compact"><span>▣</span><strong>Sin certificados</strong></div>';
+    $('documentList').innerHTML = docs.length ? docs.map((d) => `<div class="document-item ${d.id === state.selectedDocId ? 'active' : ''}" data-doc-id="${d.id}"><div class="doc-icon">PDF</div><div class="doc-main"><strong>${SSTUtils.escapeHtml(d.data?.nombre || 'Sin nombre')}</strong><small>${SSTUtils.escapeHtml(d.fileName)}</small><em>${d.dirty ? 'Editado · requiere actualizar salida' : `${d.data?.modo_validacion || (d.data?.validado_ia ? 'IA + motor local' : 'Motor local')} · Calidad ${d.data?.calidad_extraccion || '—'}`}</em></div><span class="mini-status ${d.data?.validado_ia ? 'ai' : (d.dirty ? 'warn' : '')}"></span></div>`).join('') : '<div class="empty-state compact"><span>▣</span><strong>Sin certificados</strong></div>';
   }
 
   function selectedDocument() { return state.documents.find((d) => d.id === state.selectedDocId) || null; }
@@ -190,8 +236,8 @@
     $('editorEmpty').classList.toggle('hidden', !!doc); $('editorContent').classList.toggle('hidden', !doc);
     if (!doc) return;
     const d = doc.data || {};
-    $('editorSourceFile').textContent = doc.fileName; $('editorPersonTitle').textContent = d.nombre || 'Trabajador sin identificar'; $('editorValidationMode').textContent = d.modo_validacion || 'Respaldo local';
-    $('editorStatusText').textContent = doc.dirty ? 'Cambios sin regenerar' : 'Revisión disponible'; $('editorStatusDot').className = `status-dot ${doc.dirty ? 'warn' : 'success'}`;
+    $('editorSourceFile').textContent = doc.fileName; $('editorPersonTitle').textContent = d.nombre || 'Trabajador sin identificar'; $('editorValidationMode').textContent = `${d.modo_validacion || 'Motor local'} · Calidad ${d.calidad_extraccion || '—'}`;
+    $('editorStatusText').textContent = doc.dirty ? 'Cambios sin regenerar' : ((d.campos_revision || []).length ? `Revisar: ${(d.campos_revision || []).join(', ')}` : 'Revisión disponible'); $('editorStatusDot').className = `status-dot ${doc.dirty ? 'warn' : 'success'}`;
     const values = { fieldName:d.nombre, fieldId:d.identificacion, fieldEmail:d.correo, fieldRole:d.cargo, fieldExamType:d.tipo_examen, fieldDate:d.fecha || SSTUtils.todayIso(), fieldPlace:d.lugar || 'Tunja', fieldSurveillance:d.vigilancia_programa, fieldObservations:d.observaciones, fieldReferrals:d.remisiones };
     for (const [id,value] of Object.entries(values)) $(id).value = value ?? '';
     $('fieldExams').value = (d.examenes_lista || []).join('\n');
@@ -237,7 +283,32 @@
     return missing;
   }
 
-  async function handleFiles(fileList) {
+  function extractionScore(data) {
+    const d = data || {};
+    let score = 0;
+    if (String(d.nombre || '').trim()) score += 8;
+    if (String(d.identificacion || '').trim()) score += 5;
+    if (String(d.cargo || '').trim()) score += 6;
+    score += Math.min(12, (d.examenes_lista || []).length * 3);
+    score += Math.min(18, (d.recomendaciones_lista || []).length * 3);
+    if (String(d.observaciones || '').trim()) score += 2;
+    if (String(d.remisiones || '').trim()) score += 2;
+    if (String(d.vigilancia_programa || '').trim()) score += 2;
+    score -= (d.campos_revision || []).length * 5;
+    score -= (d.recomendaciones_pendientes_revision || []).length * 4;
+    if (String(d.calidad_extraccion || '').toLowerCase() === 'alta') score += 8;
+    if (String(d.calidad_extraccion || '').toLowerCase() === 'revisar') score -= 8;
+    return score;
+  }
+
+  function needsOcrRescue(data, extraction) {
+    if (!extraction || extraction.usedOcr) return false;
+    const critical = new Set((data?.campos_revision || []).map((x) => String(x).toLowerCase()));
+    if (String(data?.calidad_extraccion || '').toLowerCase() === 'revisar') return true;
+    return ['exámenes realizados','recomendaciones','observaciones','remisiones','vigilancia epidemiológica'].some((x) => critical.has(x));
+  }
+
+  async function handleFiles(fileList, options = {}) {
     const files = [...fileList].filter((f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
     if (!files.length) return toast('Selecciona archivos PDF', 'No se encontraron certificados compatibles.', 'warn');
     $('processingBanner').classList.remove('hidden');
@@ -251,17 +322,43 @@
         updateProcessing(`Procesando ${index+1} de ${files.length}`, file.name, index/files.length);
         const buffer = await file.arrayBuffer(); const hash = await SSTUtils.sha256Bytes(buffer.slice(0));
         const cached = state.documents.find((d) => d.hash === hash) || (await SSTDB.getByIndex(SSTDB.stores.documents, 'hash', hash))[0];
-        if (cached) {
+        const cacheVigente = cached && cached.pipelineVersion === APP_CONFIG.pipelineVersion && !options.force;
+        if (cacheVigente) {
           if (!state.documents.some((d) => d.id === cached.id)) state.documents.unshift(cached);
-          state.selectedDocId = cached.id; updateProcessing(`Reutilizando ${index+1} de ${files.length}`, `${file.name} ya estaba procesado`, (index+1)/files.length); continue;
+          state.selectedDocId = cached.id; updateProcessing(`Reutilizando ${index+1} de ${files.length}`, `${file.name} ya estaba procesado con el motor actual`, (index+1)/files.length); continue;
+        }
+        const staleId = cached?.id || null;
+        if (staleId) {
+          await SSTDB.delete(SSTDB.stores.outputs, staleId);
+          state.outputs = state.outputs.filter((o) => o.id !== staleId);
+          updateProcessing(`Reanalizando ${index+1} de ${files.length}`, `${file.name} · el motor fue actualizado`, (index+.08)/files.length);
         }
         const blob = new Blob([buffer], { type: 'application/pdf' });
-        const extraction = await SSTPdf.extract(blob, { ocrEnabled, onProgress: (p) => {
+        let extraction = await SSTPdf.extract(blob, { ocrEnabled, onProgress: (p) => {
           const fractional = (index + ((p.page-1) + .55) / Math.max(1,p.total)) / files.length;
           updateProcessing(`Procesando ${index+1} de ${files.length}`, `${file.name} · ${p.message}`, fractional);
         }});
         updateProcessing(`Analizando ${index+1} de ${files.length}`, `${file.name} · reglas clínicas`, (index+.7)/files.length);
         let data = await SSTParser.analyze(extraction.text);
+
+        // Rescate multiformato: si el texto embebido existe pero el motor detecta fronteras clínicas débiles,
+        // se vuelve a leer visualmente con OCR y se conserva la lectura que obtenga mayor puntaje estructural.
+        if (ocrEnabled && needsOcrRescue(data, extraction)) {
+          try {
+            updateProcessing(`Relectura visual ${index+1} de ${files.length}`, `${file.name} · OCR estructural de respaldo`, (index+.74)/files.length);
+            const ocrExtraction = await SSTPdf.extract(blob, { ocrEnabled:true, forceOcr:true, onProgress: (p) => {
+              const fractional = (index + .72 + (((p.page-1) + .5) / Math.max(1,p.total)) * .08) / files.length;
+              updateProcessing(`Relectura visual ${index+1} de ${files.length}`, `${file.name} · ${p.message}`, fractional);
+            }});
+            const ocrData = await SSTParser.analyze(ocrExtraction.text);
+            if (extractionScore(ocrData) > extractionScore(data)) {
+              extraction = ocrExtraction;
+              data = ocrData;
+              data.modo_validacion = 'Motor clínico multiformato + OCR estructural';
+            }
+          } catch (error) { console.warn('OCR estructural de respaldo:', error); }
+        }
+
         data.fecha = data.fecha || SSTUtils.todayIso(); data.lugar = data.lugar || 'Tunja';
         let aiError = '';
         if (aiEnabled && state.backendOnline && !state.localMode && file.size <= APP_CONFIG.maxGeminiPdfMb*1024*1024) {
@@ -271,8 +368,12 @@
             data = await SSTParser.fuse(data, aiData, extraction.text);
           } catch (error) { aiError = error.message; console.warn('Gemini:', error); data.modo_validacion = 'Respaldo local · IA no disponible'; }
         } else if (aiEnabled && file.size > APP_CONFIG.maxGeminiPdfMb*1024*1024) aiError = `PDF mayor a ${APP_CONFIG.maxGeminiPdfMb} MB; se usó análisis local.`;
-        const row = { id:crypto.randomUUID(), hash, fileName:file.name, size:file.size, type:'application/pdf', blob, text:extraction.text, pageCount:extraction.pageCount, usedOcr:extraction.usedOcr, aiError, data, dirty:false, createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() };
-        await SSTDB.put(SSTDB.stores.documents, row); state.documents.unshift(row); state.selectedDocId = row.id; state.selectedOriginalId = row.id;
+        const now = new Date().toISOString();
+        const row = { id:staleId || crypto.randomUUID(), hash, fileName:file.name, size:file.size, type:'application/pdf', blob, text:extraction.text, pageCount:extraction.pageCount, usedOcr:extraction.usedOcr, aiError, data, pipelineVersion:APP_CONFIG.pipelineVersion, dirty:false, createdAt:cached?.createdAt || now, updatedAt:now };
+        await SSTDB.put(SSTDB.stores.documents, row);
+        const oldIndex = state.documents.findIndex((d) => d.id === row.id);
+        if (oldIndex >= 0) state.documents.splice(oldIndex,1);
+        state.documents.unshift(row); state.selectedDocId = row.id; state.selectedOriginalId = row.id;
         updateProcessing(`Completado ${index+1} de ${files.length}`, data.nombre || file.name, (index+1)/files.length);
       }
       state.documents.sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
@@ -282,6 +383,15 @@
   }
 
   function updateProcessing(title, detail, ratio) { $('processingTitle').textContent = title; $('processingDetail').textContent = detail; $('processingProgress').style.width = `${Math.round(Math.max(0,Math.min(1,ratio))*100)}%`; }
+
+  async function reanalyzeSelected() {
+    const doc = selectedDocument();
+    if (!doc?.blob) return toast('Sin PDF', 'Selecciona un certificado para reanalizar.', 'warn');
+    try {
+      const file = new File([doc.blob], doc.fileName || 'certificado.pdf', { type:'application/pdf' });
+      await handleFiles([file], { force:true });
+    } catch (error) { toast('No se pudo reanalizar', error.message, 'error', 8000); }
+  }
 
   async function generateSelected() {
     syncEditorToState(); const doc = selectedDocument(); if (!doc) return;
@@ -374,8 +484,8 @@
     const pill=(text,type='')=>`<span class="table-pill ${type}">${SSTUtils.escapeHtml(text)}</span>`;
     let headers=[], rows=[];
     if (state.controlTab==='validation') {
-      headers=['PDF','Trabajador','Motor','Exámenes','Recomendaciones','Pendientes','Versión'];
-      rows=state.documents.map((d)=>[d.fileName,d.data?.nombre||'',d.data?.modo_validacion||'Respaldo local',(d.data?.examenes_lista||[]).length,(d.data?.recomendaciones_lista||[]).length,(d.data?.recomendaciones_pendientes_revision||[]).length,APP_CONFIG.pipelineVersion]);
+      headers=['PDF','Trabajador','Motor','Calidad','Campos a revisar','Exámenes','Recomendaciones','Pendientes','Versión'];
+      rows=state.documents.map((d)=>[d.fileName,d.data?.nombre||'',d.data?.modo_validacion||'Motor local',d.data?.calidad_extraccion||'—',(d.data?.campos_revision||[]).join(', '),(d.data?.examenes_lista||[]).length,(d.data?.recomendaciones_lista||[]).length,(d.data?.recomendaciones_pendientes_revision||[]).length,d.pipelineVersion||'Anterior']);
     } else if (state.controlTab==='package') {
       headers=['Trabajador','PDF origen','Estado','Archivo final','Consecutivo'];
       rows=state.documents.map((d)=>{const o=state.outputs.find((x)=>x.id===d.id);return[d.data?.nombre||'Sin nombre',d.fileName,o?(d.dirty?'Desactualizado':'Listo'):'Pendiente',o?.filename||'—',o?.consecutive||'—'];});
@@ -385,7 +495,7 @@
       headers=['Fecha','Trabajador','Destinatario','CC','CCO','Asunto','Archivo','Estado','Detalle']; rows=state.emailHistory.slice(0,200).map((h)=>[h.date||h.fecha||h.createdAt||'',h.worker||h.trabajador||h.personName||'',h.to||h.destinatario||'',h.cc||'',h.bcc||h.cco||'',h.subject||h.asunto||'',h.file||h.archivo||'',h.status||h.estado||'',h.detail||h.detalle||'']);
     }
     if (!rows.length) { $('controlTable').innerHTML='<div class="empty-state compact"><span>▤</span><strong>Sin registros para mostrar</strong></div>'; return; }
-    $('controlTable').innerHTML=`<table class="data-table"><thead><tr>${headers.map((h)=>`<th>${SSTUtils.escapeHtml(h)}</th>`).join('')}</tr></thead><tbody>${rows.map((row)=>`<tr>${row.map((v,i)=>`<td>${(headers[i]==='Estado'||headers[i]==='Motor')?pill(String(v),/listo|enviado|ia/i.test(String(v))?'ok':(/error|desactualizado/i.test(String(v))?'error':'warn')):SSTUtils.escapeHtml(v)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+    $('controlTable').innerHTML=`<table class="data-table"><thead><tr>${headers.map((h)=>`<th>${SSTUtils.escapeHtml(h)}</th>`).join('')}</tr></thead><tbody>${rows.map((row)=>`<tr>${row.map((v,i)=>`<td>${(headers[i]==='Estado'||headers[i]==='Motor'||headers[i]==='Calidad')?pill(String(v),/listo|enviado|ia|alta/i.test(String(v))?'ok':(/error|desactualizado|revisar/i.test(String(v))?'error':'warn')):SSTUtils.escapeHtml(v)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
   }
 
   async function syncSharedAssets() {
@@ -464,12 +574,12 @@
     $('documentSearch').addEventListener('input',renderDocumentList); $('documentList').addEventListener('click',(e)=>{const item=e.target.closest('[data-doc-id]');if(item){state.selectedDocId=item.dataset.docId;renderDocumentList();renderEditor();}}); $('recentDocuments').addEventListener('click',(e)=>{const item=e.target.closest('[data-dashboard-doc]');if(item){state.selectedDocId=item.dataset.dashboardDoc;showView('documents');renderDocumentList();renderEditor();}});
     ['fieldName','fieldId','fieldEmail','fieldRole','fieldExamType','fieldDate','fieldPlace','fieldSurveillance','fieldObservations','fieldReferrals','fieldExams','fieldPending'].forEach((id)=>$(id).addEventListener('input',syncEditorToState));
     $('recommendationGroups').addEventListener('input',syncEditorToState); $('recommendationGroups').addEventListener('click',(e)=>{if(e.target.classList.contains('remove-group')){e.target.closest('.recommendation-card').remove();syncEditorToState();}}); $('btnAddRecommendationGroup').addEventListener('click',()=>{const wrapper=document.createElement('div');wrapper.className='recommendation-card';wrapper.innerHTML='<div class="recommendation-card-head"><input class="rec-exam" value="Nuevo examen" aria-label="Examen"><button class="remove-group" type="button">×</button></div><textarea class="rec-text" rows="4" placeholder="Una recomendación por línea"></textarea>';$('recommendationGroups').appendChild(wrapper);wrapper.querySelector('.rec-exam').select();syncEditorToState();});
-    $('btnGenerateSelected').addEventListener('click',generateSelected); $('btnGenerateAll').addEventListener('click',generateAll); $('btnGenerateAll2').addEventListener('click',generateAll); $('btnPreviewOriginal').addEventListener('click',()=>openOriginalModal(selectedDocument()));
+    $('btnReanalyzeSelected').addEventListener('click',reanalyzeSelected); $('btnGenerateSelected').addEventListener('click',generateSelected); $('btnGenerateAll').addEventListener('click',generateAll); $('btnGenerateAll2').addEventListener('click',generateAll); $('btnPreviewOriginal').addEventListener('click',()=>openOriginalModal(selectedDocument()));
     $('originalList').addEventListener('click',(e)=>{const item=e.target.closest('[data-original-id]');if(item){state.selectedOriginalId=item.dataset.originalId;state.originalPage=1;renderOriginals();}}); $('btnPrevPage').addEventListener('click',()=>{if(state.originalPage>1){state.originalPage--;renderOriginals();}}); $('btnNextPage').addEventListener('click',()=>{const d=state.documents.find((x)=>x.id===state.selectedOriginalId);if(d&&state.originalPage<(d.pageCount||1)){state.originalPage++;renderOriginals();}}); $('btnDownloadOriginal').addEventListener('click',()=>{const d=state.documents.find((x)=>x.id===state.selectedOriginalId);if(d)SSTUtils.downloadBlob(d.blob,`ORIGINAL_${d.fileName}`);}); $('btnIndexOriginals').addEventListener('click',()=>{renderOriginals();toast('Índice actualizado',`${state.documents.length} PDF disponibles sin reprocesar.`,'success');});
     $('generatedList').addEventListener('click',(e)=>{const item=e.target.closest('[data-output-id]');if(item){state.selectedOutputId=item.dataset.outputId;renderGenerated();}}); $('btnDownloadGenerated').addEventListener('click',()=>{const o=selectedOutput();if(o)SSTUtils.downloadBlob(o.blob,o.filename);}); $('btnDownloadZip').addEventListener('click',async()=>{if(!state.outputs.length)return toast('Sin archivos','No hay documentos para comprimir.','warn');try{const zip=await SSTGenerator.makeZip(state.outputs);SSTUtils.downloadBlob(zip,`Lote_SST_JER_SA_${SSTUtils.todayIso().replaceAll('-','')}.zip`);}catch(e){toast('No se pudo crear el ZIP',e.message,'error');}});
     $('emailRecipients').addEventListener('input',(e)=>{if(e.target.matches('.email-to')){const id=e.target.dataset.emailTo,d=state.documents.find((x)=>x.id===id);if(d){d.data.correo=e.target.value.trim();d.updatedAt=new Date().toISOString();SSTDB.put(SSTDB.stores.documents,d);}}updateEmailPreview();}); $('emailRecipients').addEventListener('change',updateEmailPreview); $('emailSubject').addEventListener('input',updateEmailPreview); $('emailBody').addEventListener('input',updateEmailPreview); $('btnSelectAllEmail').addEventListener('click',()=>{qsa('.email-select').forEach((x)=>x.checked=true);updateEmailPreview();}); $('btnSendEmails').addEventListener('click',sendEmails);
     qsa('[data-control-tab]').forEach((b)=>b.addEventListener('click',()=>{state.controlTab=b.dataset.controlTab;qsa('[data-control-tab]').forEach((x)=>x.classList.toggle('active',x===b));renderControlTable();}));
-    $('btnSettingsTestBackend').addEventListener('click',()=>saveBackendUrl('settingsBackendUrl')); $('btnSettingsSaveBackend').addEventListener('click',async()=>{if(await saveBackendUrl('settingsBackendUrl'))await showAuthIfNeeded();}); $('btnSaveAi').addEventListener('click',saveAiSettings);
+    $('btnSettingsTestBackend').addEventListener('click',()=>saveBackendUrl('settingsBackendUrl')); $('btnSettingsSaveBackend').addEventListener('click',async()=>{if(await saveBackendUrl('settingsBackendUrl'))await showAuthIfNeeded();}); $('btnSaveAi').addEventListener('click',saveAiSettings); $('btnRefreshConsecutive').addEventListener('click',refreshBackendDiagnostics); $('btnSaveConsecutive').addEventListener('click',saveConsecutiveSettings);
     $('btnUploadTemplate').addEventListener('click',()=>$('templateInput').click()); $('templateInput').addEventListener('change',(e)=>{uploadAsset('template',e.target.files[0]);e.target.value='';}); $('btnRemoveTemplate').addEventListener('click',async()=>{await SSTDB.delete(SSTDB.stores.assets,'template');if(state.backendOnline&&!state.localMode&&state.user?.role==='admin'){try{await SSTBackend.call('removeSharedAsset',{kind:'template'});}catch(e){toast('Plantilla local eliminada',e.message,'warn');}}await renderAssetSettings();toast('Plantilla restaurada','Se utilizará la plantilla base incluida.','success');});
     $('btnUploadSignature').addEventListener('click',()=>$('signatureInput').click()); $('signatureInput').addEventListener('change',(e)=>{uploadAsset('signature',e.target.files[0]);e.target.value='';}); $('btnRemoveSignature').addEventListener('click',async()=>{await SSTDB.delete(SSTDB.stores.assets,'signature');if(state.backendOnline&&!state.localMode&&state.user?.role==='admin'){try{await SSTBackend.call('removeSharedAsset',{kind:'signature'});}catch(e){toast('Firma local eliminada',e.message,'warn');}}await renderAssetSettings();toast('Firma eliminada','','success');});
     $('btnSavePreferences').addEventListener('click',async()=>{await SSTDB.setSetting('outputFormat',$('settingsOutputFormat').value);await SSTDB.setSetting('ocrEnabled',$('toggleOcr').checked);toast('Preferencias guardadas','Se aplicarán a las próximas cargas y generaciones.','success');renderDashboard();});

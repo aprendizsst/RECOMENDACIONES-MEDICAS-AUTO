@@ -234,7 +234,7 @@
 
                 <div class="editor-actions">
                   <div class="save-state" id="saveState">Cambios guardados automáticamente</div>
-                  <div><button id="btnPreviewOriginal" class="btn secondary">Ver PDF original</button><button id="btnGenerateSelected" class="btn primary">Generar vista previa</button></div>
+                  <div><button id="btnReanalyzeSelected" class="btn ghost">↻ Reanalizar</button><button id="btnPreviewOriginal" class="btn secondary">Ver PDF original</button><button id="btnGenerateSelected" class="btn primary">Generar vista previa</button></div>
                 </div>
               </div>
             </section>
@@ -296,6 +296,8 @@
           <div class="settings-grid">
             <section class="panel"><div class="panel-head"><div><span class="eyebrow">SERVICIO SEGURO</span><h3>Google Apps Script</h3></div><span id="settingsBackendStatus" class="status-badge">Sin conexión</span></div><label><span>URL de la Web App</span><input id="settingsBackendUrl" type="url" /></label><div class="button-row"><button id="btnSettingsTestBackend" class="btn secondary">Probar conexión</button><button id="btnSettingsSaveBackend" class="btn primary">Guardar</button></div><p class="help-text">Usa la URL terminada en <code>/exec</code>. El portal usa un canal POST seguro con Google Apps Script para evitar problemas CORS.</p></section>
 
+            <section class="panel"><div class="panel-head"><div><span class="eyebrow">CONSECUTIVOS</span><h3>Google Sheets</h3></div><span id="consecutiveStatusBadge" class="status-badge">Consultando</span></div><label><span>URL o ID de la hoja de cálculo</span><input id="settingsConsecutiveSpreadsheet" placeholder="https://docs.google.com/spreadsheets/d/.../edit" /></label><label><span>Nombre de la pestaña</span><input id="settingsConsecutiveSheet" value="Consecutivos" /></label><label><span>Prefijo</span><input id="settingsConsecutivePrefix" value="SST" maxlength="16" /></label><div class="button-row"><button id="btnRefreshConsecutive" class="btn secondary">Consultar actual</button><button id="btnSaveConsecutive" class="btn primary">Guardar y validar</button></div><p id="consecutiveStatusDetail" class="help-text">El backend lee el mayor consecutivo directamente desde Sheets y usa bloqueo para evitar duplicados.</p></section>
+
             <section class="panel"><div class="panel-head"><div><span class="eyebrow">INTELIGENCIA ARTIFICIAL</span><h3>Gemini</h3></div></div><label class="switch-row"><div><strong>Validación visual automática</strong><small>Envía el PDF al backend para validación con Gemini.</small></div><input id="toggleAi" type="checkbox" /></label><label><span>Modelo</span><input id="settingsGeminiModel" /></label><label><span>API key de Gemini</span><input id="settingsGeminiKey" type="password" placeholder="Déjala vacía para conservar la guardada" /></label><button id="btnSaveAi" class="btn primary full">Guardar configuración de IA</button></section>
 
             <section class="panel"><div class="panel-head"><div><span class="eyebrow">DOCUMENTO INSTITUCIONAL</span><h3>Plantilla Word</h3></div><span id="templateStatus" class="status-badge">Plantilla base</span></div><input id="templateInput" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden /><button id="btnUploadTemplate" class="upload-card"><span>W</span><div><strong>Cargar plantilla .docx</strong><small id="templateFileName">Se usa la plantilla base incluida</small></div></button><div class="button-row"><button id="btnRemoveTemplate" class="btn ghost">Restaurar base</button></div><p class="help-text">Se reconocen los mismos marcadores del proyecto Streamlit: <code>{{NOMBRE DE LA PERSONA}}</code>, <code>{{LISTA DE EXAMENES REALIZADOS}}</code>, <code>{{Recomendaciones médicas}}</code>, etc.</p></section>
@@ -317,17 +319,17 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.2/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script src="https://cdn.jsdelivr.net/pyodide/v0.27.7/full/pyodide.js"></script>
-  <script src="js/config.js?v=20260820-3"></script>
-  <script src="js/utils.js?v=20260820-3"></script>
-  <script src="js/db.js?v=20260820-3"></script>
-  <script src="js/backend.js?v=20260820-3"></script>
-  <script src="js/parser-bridge.js?v=20260820-3"></script>
-  <script src="js/pdf-service.js?v=20260820-3"></script>
-  <script src="js/docx-engine.js?v=20260820-3"></script>
-  <script src="js/generator.js?v=20260820-3"></script>
-  <script src="js/app.js?v=20260820-3"></script>
+  <script src="js/config.js?v=20260820-5"></script>
+  <script src="js/utils.js?v=20260820-5"></script>
+  <script src="js/db.js?v=20260820-5"></script>
+  <script src="js/backend.js?v=20260820-5"></script>
+  <script src="js/parser-bridge.js?v=20260820-5"></script>
+  <script src="js/pdf-service.js?v=20260820-5"></script>
+  <script src="js/docx-engine.js?v=20260820-5"></script>
+  <script src="js/generator.js?v=20260820-5"></script>
+  <script src="js/app.js?v=20260820-5"></script>
 </body>
 </html>

@@ -4,6 +4,10 @@ const DEFAULT_GEMINI_MODEL = 'gemini-3.6-flash';
 const SESSION_HOURS = 8;
 const USER_SHEET = 'Usuarios';
 const EMAIL_SHEET = 'HistorialCorreos';
+const CONSECUTIVE_SHEET = 'Consecutivos';
+const CONSECUTIVE_LEDGER_SHEET = 'ConsecutivosControl';
+const CONSECUTIVE_LEDGER_HEADERS = ['document_key','consecutivo','spreadsheet_id','sheet_name','creado_en'];
+const CONSECUTIVE_HEADERS = ['consecutivo','numero','anio','fecha_documento','trabajador','identificacion','cargo','tipo_examen','pdf_origen','hash_documento','usuario','creado_en'];
 
 function doGet(e) {
   const mode = String((e && e.parameter && e.parameter.mode) || 'bridge');
@@ -84,6 +88,9 @@ function apiDispatch(requestJson) {
       case 'getSharedAsset': return getSharedAsset_(requireSession_(sessionToken), payload);
       case 'geminiAnalyze': return geminiAnalyze_(requireSession_(sessionToken), payload);
       case 'nextConsecutive': return nextConsecutive_(requireSession_(sessionToken), payload);
+      case 'consecutiveStatus': return consecutiveStatus_(requireSession_(sessionToken));
+      case 'saveConsecutiveConfig': return saveConsecutiveConfig_(requireAdmin_(sessionToken), payload);
+      case 'mailStatus': return mailStatus_(requireSession_(sessionToken));
       case 'sendEmail': return sendEmail_(requireSession_(sessionToken), payload);
       case 'emailHistory': return emailHistory_(requireSession_(sessionToken), payload);
       default: throw new Error('Acción no soportada: ' + action);
@@ -108,6 +115,8 @@ function getDb_() {
   props.setProperty('PORTAL_DB_SPREADSHEET_ID', ss.getId());
   initializeSheet_(ss, USER_SHEET, ['usuario','salt','password_hash','nombre','rol','creado_en','activo']);
   initializeSheet_(ss, EMAIL_SHEET, ['fecha','pdf_origen','trabajador','destinatario','cc','cco','asunto','archivo','estado','detalle']);
+  initializeSheet_(ss, CONSECUTIVE_SHEET, CONSECUTIVE_HEADERS);
+  initializeSheet_(ss, CONSECUTIVE_LEDGER_SHEET, CONSECUTIVE_LEDGER_HEADERS);
   return ss;
 }
 
@@ -317,8 +326,11 @@ function geminiSchema_() {
   return { type:'object', properties:{
     nombre:{type:'string'}, cargo:{type:'string'}, identificacion:{type:'string'}, correo:{type:'string'}, tipo_examen:{type:'string'}, lugar:{type:'string'}, fecha:{type:'string',description:'AAAA-MM-DD o vacío'},
     examenes_realizados:{type:'array',items:{type:'string'}}, recomendaciones_medicas:{type:'array',items:{type:'string'}}, recomendaciones_por_examen:{type:'array',items:{type:'object',properties:{examen:{type:'string'},recomendaciones:{type:'array',items:{type:'string'}}},required:['examen','recomendaciones']}},
-    vigilancia_programa:{type:'array',items:{type:'string'}}, observaciones:{type:'string'}, remisiones:{type:'string'}
-  }, required:['nombre','cargo','identificacion','correo','tipo_examen','lugar','fecha','examenes_realizados','recomendaciones_medicas','recomendaciones_por_examen','vigilancia_programa','observaciones','remisiones'] };
+    vigilancia_programa:{type:'array',items:{type:'string'}}, observaciones:{type:'string'}, remisiones:{type:'string'},
+    evidencias:{type:'object',properties:{
+      recomendaciones:{type:'array',items:{type:'string'}}, observaciones:{type:'string'}, remisiones:{type:'string'}, vigilancia_programa:{type:'string'}
+    },required:['recomendaciones','observaciones','remisiones','vigilancia_programa']}
+  }, required:['nombre','cargo','identificacion','correo','tipo_examen','lugar','fecha','examenes_realizados','recomendaciones_medicas','recomendaciones_por_examen','vigilancia_programa','observaciones','remisiones','evidencias'] };
 }
 
 function geminiPayload_(pdfBase64, prompt, model) {
@@ -348,6 +360,27 @@ function geminiRequest_(apiKey, model, pdfBase64, prompt) {
   return extractGeminiJson_(response.getContentText());
 }
 
+function uniqueStrings_(items) {
+  const out = [], seen = {};
+  (items || []).forEach(function(v){ const x=String(v||'').replace(/\s+/g,' ').trim(); const k=x.toLowerCase(); if(x&&!seen[k]){seen[k]=true;out.push(x);} });
+  return out;
+}
+
+function mergeGeminiAudits_(first, second) {
+  if (!second) return first;
+  const out = Object.assign({}, first || {});
+  ['nombre','cargo','identificacion','correo','tipo_examen','lugar','fecha','observaciones','remisiones'].forEach(function(k){ if(String(second[k]||'').trim()) out[k]=second[k]; });
+  out.examenes_realizados = uniqueStrings_([].concat(first.examenes_realizados||[], second.examenes_realizados||[]));
+  out.recomendaciones_medicas = uniqueStrings_([].concat(first.recomendaciones_medicas||[], second.recomendaciones_medicas||[]));
+  out.vigilancia_programa = uniqueStrings_([].concat(first.vigilancia_programa||[], second.vigilancia_programa||[]));
+  const byExam = {};
+  function consume(map){ (map||[]).forEach(function(row){ if(!row||!row.examen)return; const key=String(row.examen).trim(); byExam[key]=uniqueStrings_([].concat(byExam[key]||[], row.recomendaciones||[])); }); }
+  consume(first.recomendaciones_por_examen); consume(second.recomendaciones_por_examen);
+  out.recomendaciones_por_examen = Object.keys(byExam).map(function(k){return {examen:k,recomendaciones:byExam[k]};});
+  out.evidencias = Object.assign({}, first.evidencias||{}, second.evidencias||{});
+  return out;
+}
+
 function geminiAnalyze_(user, payload) {
   const props = PropertiesService.getScriptProperties();
   const apiKey = String(props.getProperty('GEMINI_API_KEY') || '').trim();
@@ -358,24 +391,21 @@ function geminiAnalyze_(user, payload) {
   const text = String(payload.text || '').slice(0,30000);
   const preferred = String(payload.model || props.getProperty('GEMINI_MODEL') || DEFAULT_GEMINI_MODEL).replace(/^models\//,'').trim();
   const models = [preferred, DEFAULT_GEMINI_MODEL, 'gemini-3.1-flash-lite'].filter(function(v,i,a){ return v && a.indexOf(v) === i; });
-  const prompt = `Eres un extractor documental para Seguridad y Salud en el Trabajo.\nLee visualmente TODAS las páginas del PDF adjunto, incluidas tablas, columnas, celdas y textos escaneados.\nDevuelve únicamente los datos presentes en el documento.\nReglas obligatorias:\n- No diagnostiques, no recomiendes y no inventes información.\n- Transcribe cada recomendación COMPLETA desde su inicio hasta su punto final, aunque continúe en otra línea o celda.\n- Une correctamente los saltos de línea que pertenecen a una misma recomendación.\n- No resumas, no parafrasees y no cortes frases.\n- Convierte los bloques totalmente en mayúsculas a redacción normal, respetando nombres propios y siglas.\n- Corrige únicamente ortografía, tildes, espacios y puntuación evidentes sin cambiar el sentido.\n- No dupliques exámenes ni recomendaciones.\n- Relaciona cada recomendación con el examen que la origina en recomendaciones_por_examen.\n- Incluye todos los exámenes realizados; si uno no tiene recomendación explícita, usa lista vacía.\n- Extrae identificación y correo solo cuando aparezcan explícitamente.\n- Omite consentimientos, habeas data, firmas y texto legal.\n- Si un dato no aparece, usa cadena vacía o lista vacía.\n- Revisa el PDF completo una segunda vez antes de responder.\n\nExtracción local de referencia (puede estar incompleta):\n${JSON.stringify(localData)}\n\nTEXTO EXTRAÍDO LOCALMENTE COMO APOYO:\n${text}`;
+  const prompt = `Actúas como auditor documental de certificados de salud ocupacional. Tu función es EXTRAER, nunca interpretar clínicamente.\n\nLee visualmente TODAS las páginas, tablas, columnas, casillas y notas del PDF aunque el diseño cambie entre proveedores. No dependas de posiciones fijas. Primero identifica las secciones por su significado y después extrae.\n\nREGLAS DE FRONTERA ESTRICTAS:\n1. RECOMENDACIONES POR EXAMEN: asocia una recomendación a un examen solo si la tabla, encabezado, fila, columna o proximidad visual lo relaciona explícitamente. No asignes por encontrar palabras como ruido, gafas, espalda o respiratorio. Si es una recomendación general, déjala como general. Incluye cada examen realizado aunque tenga lista vacía.\n2. REMISIONES: extrae únicamente lo que el documento marque como remisión, interconsulta o remitir. No conviertas controles, recomendaciones o exámenes futuros en remisiones. Si dice no requiere/no aplica/sin remisiones, devuelve "No".\n3. VIGILANCIA EPIDEMIOLÓGICA: registra un programa solo cuando el documento indique ingreso, inclusión, continuidad o pertenencia al PVE/SVE/programa. NO infieras ingreso solo porque exista una recomendación auditiva, visual, osteomuscular, respiratoria o cardiovascular. Si explícitamente no ingresa/no aplica, devuelve lista vacía.\n4. OBSERVACIONES: extrae solo el contenido de observaciones/comentarios. Si un bloque se llama "otras observaciones y recomendaciones", separa las frases de acción (usar, realizar, mantener, evitar, asistir, control) como recomendaciones y deja como observación lo descriptivo.\n5. No mezcles consentimientos, firmas, habeas data, encabezados, diagnósticos ajenos ni texto legal.\n6. No inventes, no resumas y no parafrasees. Une saltos de línea que pertenecen a la misma frase. Corrige solo espacios, tildes y OCR evidente.\n7. En evidencias devuelve fragmentos BREVES y literales del PDF que sustenten recomendaciones, observaciones, remisiones y vigilancia. Si no existe evidencia, deja vacío.\n8. Antes de responder, haz una revisión completa desde la primera hasta la última página.\n\nExtracción del motor local (solo referencia, puede equivocarse):\n${JSON.stringify(localData)}\n\nTexto extraído localmente (solo apoyo; prioriza la lectura visual del PDF):\n${text}`;
   let lastError = '';
   for (let i=0;i<models.length;i++) {
     const model = models[i];
     try {
-      let data = geminiRequest_(apiKey, model, pdfBase64, prompt);
-      data._modelo_usado = model; data._segunda_revision_ia = false; data._fragmentos_pendientes = [];
-      const localCount = Array.isArray(localData.recomendaciones_lista) ? localData.recomendaciones_lista.length : 0;
-      const recs = Array.isArray(data.recomendaciones_medicas) ? data.recomendaciones_medicas : [];
-      const suspicious = recs.some(function(r){ const s=String(r||'').trim(); return s && s.length < 22; }) || (localCount >= 3 && recs.length < Math.max(1,Math.floor(localCount/2)));
-      if (suspicious) {
-        try {
-          const reviewPrompt = `Realiza una segunda auditoría visual completa del PDF adjunto.\nLa primera lectura produjo:\n${JSON.stringify(data)}\nDevuelve TODO el JSON del certificado nuevamente. Lee todas las páginas y tablas. Cada recomendación debe estar completa; no inventes texto, no repitas elementos y conserva listas vacías cuando no exista recomendación explícita.`;
-          const reviewed = geminiRequest_(apiKey, model, pdfBase64, reviewPrompt);
-          if ((reviewed.recomendaciones_medicas || []).length >= recs.length) data = reviewed;
-          data._segunda_revision_ia = true; data._modelo_usado = model; data._fragmentos_pendientes = [];
-        } catch (_) { data._segunda_revision_ia = false; }
-      }
+      let first = geminiRequest_(apiKey, model, pdfBase64, prompt);
+      let data = first;
+      try {
+        const auditPrompt = `AUDITORÍA FINAL. Vuelve a leer visualmente el PDF completo y verifica especialmente cuatro zonas que suelen cambiar de formato: (a) recomendaciones asociadas a cada examen, (b) remisiones, (c) ingreso/continuidad en programas de vigilancia epidemiológica y (d) observaciones.\n\nPrimera extracción:\n${JSON.stringify(first)}\n\nMotor local:\n${JSON.stringify(localData)}\n\nCorrige omisiones y asociaciones equivocadas. No deduzcas PVE a partir de una recomendación, no confundas controles con remisiones y no pongas observaciones dentro de recomendaciones. Devuelve nuevamente el JSON completo con evidencias breves literales.`;
+        const second = geminiRequest_(apiKey, model, pdfBase64, auditPrompt);
+        data = mergeGeminiAudits_(first, second);
+        data._segunda_revision_ia = true;
+      } catch (_) { data._segunda_revision_ia = false; }
+      data._modelo_usado = model;
+      data._fragmentos_pendientes = [];
       return data;
     } catch (error) {
       lastError = error.message;
@@ -385,15 +415,215 @@ function geminiAnalyze_(user, payload) {
   throw new Error(lastError || 'Gemini no devolvió una extracción utilizable.');
 }
 
+function normalizeSheetId_(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const match = raw.match(/\/spreadsheets\/d\/([A-Za-z0-9_-]+)/);
+  const id = match ? match[1] : raw;
+  if (!/^[A-Za-z0-9_-]{20,}$/.test(id)) throw new Error('La URL o ID de Google Sheets no es válido.');
+  return id;
+}
+
+function normalizeHeader_(value) {
+  return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[^A-Z0-9]+/g,' ').trim();
+}
+
+function consecutiveConfig_() {
+  const props = PropertiesService.getScriptProperties();
+  return {
+    spreadsheetId: String(props.getProperty('CONSECUTIVE_SPREADSHEET_ID') || ''),
+    sheetName: String(props.getProperty('CONSECUTIVE_SHEET_NAME') || CONSECUTIVE_SHEET),
+    prefix: String(props.getProperty('CONSECUTIVE_PREFIX') || 'SST').replace(/[^A-Za-z0-9_-]/g,'').toUpperCase() || 'SST'
+  };
+}
+
+function consecutiveSpreadsheet_() {
+  const cfg = consecutiveConfig_();
+  if (cfg.spreadsheetId) return SpreadsheetApp.openById(cfg.spreadsheetId);
+  return getDb_();
+}
+
+function locateConsecutiveSheet_(ss) {
+  const cfg = consecutiveConfig_();
+  let sheet = ss.getSheetByName(cfg.sheetName);
+  if (!sheet) sheet = ss.insertSheet(cfg.sheetName);
+  if (sheet.getLastRow() === 0) initializeSheet_(ss, sheet.getName(), CONSECUTIVE_HEADERS);
+  const maxRows = Math.min(Math.max(sheet.getLastRow(),1), 10);
+  const maxCols = Math.min(Math.max(sheet.getLastColumn(), CONSECUTIVE_HEADERS.length), 50);
+  const values = sheet.getRange(1,1,maxRows,maxCols).getDisplayValues();
+  const accepted = [
+    'CONSECUTIVO','CONSECUTIVO SST','NUMERO DE CONSECUTIVO','NUMERO CONSECUTIVO',
+    'N CONSECUTIVO','NRO CONSECUTIVO','NO CONSECUTIVO','NUM CONSECUTIVO','NUMERO'
+  ];
+  let headerRow = -1, consecutiveCol = -1;
+  for (let r=0;r<values.length;r++) {
+    for (let c=0;c<values[r].length;c++) {
+      const h = normalizeHeader_(values[r][c]);
+      const matches = accepted.indexOf(h) >= 0 || /^(?:N|NO|NRO|NUM|NUMERO)?\s*CONSECUTIVO(?:\s+SST)?$/.test(h);
+      if (matches) { headerRow=r+1; consecutiveCol=c+1; break; }
+    }
+    if (consecutiveCol > 0) break;
+  }
+  if (consecutiveCol < 0) {
+    // No se pisa una hoja existente incompatible: se crea una hoja administrada por el bot.
+    if (sheet.getLastRow() > 0 && sheet.getLastColumn() > 0) {
+      let alt = ss.getSheetByName(CONSECUTIVE_SHEET + '_BOT');
+      if (!alt) alt = ss.insertSheet(CONSECUTIVE_SHEET + '_BOT');
+      if (alt.getLastRow() === 0) initializeSheet_(ss, alt.getName(), CONSECUTIVE_HEADERS);
+      return locateConsecutiveSheetByName_(alt);
+    }
+  }
+  return locateConsecutiveSheetByName_(sheet, headerRow, consecutiveCol);
+}
+
+function locateConsecutiveSheetByName_(sheet, knownHeaderRow, knownConsecutiveCol) {
+  const maxCols = Math.max(sheet.getLastColumn(), CONSECUTIVE_HEADERS.length);
+  let headerRow = knownHeaderRow || 1;
+  let headers = sheet.getRange(headerRow,1,1,maxCols).getDisplayValues()[0];
+  let map = {};
+  headers.forEach(function(h,i){ const n=normalizeHeader_(h); if(n) map[n]=i+1; });
+  let consecutiveCol = knownConsecutiveCol || map['CONSECUTIVO'] || map['CONSECUTIVO SST'] || map['NUMERO DE CONSECUTIVO'] || map['NUMERO CONSECUTIVO'] || map['N CONSECUTIVO'] || map['NRO CONSECUTIVO'] || map['NO CONSECUTIVO'] || map['NUM CONSECUTIVO'] || map['NUMERO'] || 1;
+  return { sheet:sheet, headerRow:headerRow, headers:headers, map:map, consecutiveCol:consecutiveCol };
+}
+
+function parseConsecutiveNumber_(value, year, prefix) {
+  const raw = String(value || '').trim();
+  if (!raw) return 0;
+  if (/^\d+$/.test(raw)) return Number(raw);
+  const years = raw.match(/20\d{2}/g) || [];
+  if (years.length && years.indexOf(String(year)) < 0) return 0;
+  const m = raw.match(/(\d+)\s*$/);
+  return m ? Number(m[1]) || 0 : 0;
+}
+
+function findHeaderCol_(info, names) {
+  for (let i=0;i<names.length;i++) { const col=info.map[normalizeHeader_(names[i])]; if(col)return col; }
+  return 0;
+}
+
+function scanConsecutives_(info, year, prefix, documentKey) {
+  const start = info.headerRow + 1, last = info.sheet.getLastRow();
+  if (last < start) return { max:0, existing:'', rows:0 };
+  const values = info.sheet.getRange(start,1,last-start+1,Math.max(info.sheet.getLastColumn(), info.consecutiveCol)).getDisplayValues();
+  const keyCol = findHeaderCol_(info, ['hash_documento','hash documento','document_key','document key','hash']);
+  const yearCol = findHeaderCol_(info, ['anio','año','year']);
+  let max = 0, existing = '', rows = 0;
+  values.forEach(function(row){
+    const raw = String(row[info.consecutiveCol-1] || '').trim();
+    if (!raw) return;
+    if (yearCol) {
+      const rowYear = String(row[yearCol-1] || '').match(/20\d{2}/);
+      if (rowYear && rowYear[0] !== String(year)) return;
+    }
+    const parsed = parseConsecutiveNumber_(raw, year, prefix);
+    if (parsed > 0) { max = Math.max(max, parsed); rows++; }
+    if (documentKey && keyCol && String(row[keyCol-1]||'').trim() === documentKey) existing = raw;
+  });
+  return { max:max, existing:existing, rows:rows };
+}
+
+function consecutiveExists_(info, value) {
+  const candidate = String(value || '').trim();
+  if (!candidate) return false;
+  const start = info.headerRow + 1, last = info.sheet.getLastRow();
+  if (last < start) return false;
+  const values = info.sheet.getRange(start, info.consecutiveCol, last-start+1, 1).getDisplayValues();
+  return values.some(function(row){ return String(row[0] || '').trim() === candidate; });
+}
+
+function ledgerLookup_(documentKey, spreadsheetId, sheetName) {
+  if (!documentKey) return '';
+  const sheet = getSheet_(CONSECUTIVE_LEDGER_SHEET, CONSECUTIVE_LEDGER_HEADERS);
+  const last = sheet.getLastRow();
+  if (last <= 1) return '';
+  const rows = sheet.getRange(2,1,last-1,5).getDisplayValues();
+  for (let i=rows.length-1;i>=0;i--) {
+    if (String(rows[i][0]||'').trim() === documentKey &&
+        String(rows[i][2]||'').trim() === String(spreadsheetId||'') &&
+        String(rows[i][3]||'').trim() === String(sheetName||'')) return String(rows[i][1]||'').trim();
+  }
+  return '';
+}
+
+function ledgerSave_(documentKey, consecutive, spreadsheetId, sheetName) {
+  if (!documentKey || !consecutive) return;
+  const sheet = getSheet_(CONSECUTIVE_LEDGER_SHEET, CONSECUTIVE_LEDGER_HEADERS);
+  sheet.appendRow([documentKey, consecutive, spreadsheetId, sheetName, new Date()]);
+}
+
+function appendConsecutive_(info, values) {
+  const width = Math.max(info.sheet.getLastColumn(), info.headers.length, CONSECUTIVE_HEADERS.length);
+  const row = new Array(width).fill('');
+  function put(names, value) { const c=findHeaderCol_(info,names); if(c)row[c-1]=value; }
+  put(['numero'], values.number);
+  put(['consecutivo','numero de consecutivo','n consecutivo','no consecutivo'], values.consecutive);
+  put(['anio','año'], values.year);
+  put(['fecha_documento','fecha documento','fecha'], values.date);
+  put(['trabajador','nombre','colaborador'], values.name);
+  put(['identificacion','documento','cedula','cédula'], values.identification);
+  put(['cargo','rol'], values.role);
+  put(['tipo_examen','tipo examen','examen'], values.exam);
+  put(['pdf_origen','pdf origen','archivo','documento origen'], values.sourceFile);
+  put(['hash_documento','hash documento','document_key','document key','hash'], values.documentKey);
+  put(['usuario'], values.user);
+  put(['creado_en','creado en','timestamp'], new Date());
+  // Si la hoja solo tiene una columna de consecutivo reconocible, al menos escribe allí.
+  if (!row[info.consecutiveCol-1]) row[info.consecutiveCol-1] = values.consecutive;
+  info.sheet.getRange(info.sheet.getLastRow()+1,1,1,width).setValues([row]);
+}
+
+function consecutiveStatus_(user) {
+  const cfg = consecutiveConfig_();
+  const ss = consecutiveSpreadsheet_();
+  const info = locateConsecutiveSheet_(ss);
+  const year = new Date().getFullYear();
+  const scan = scanConsecutives_(info, year, cfg.prefix, '');
+  return { configured:!!cfg.spreadsheetId, spreadsheetName:ss.getName(), spreadsheetId:ss.getId(), sheetName:info.sheet.getName(), prefix:cfg.prefix, current:scan.max, next:scan.max+1, rowsRead:scan.rows, headerRow:info.headerRow, consecutiveColumn:info.consecutiveCol };
+}
+
+function saveConsecutiveConfig_(user, payload) {
+  const props = PropertiesService.getScriptProperties();
+  const id = normalizeSheetId_(payload.spreadsheetUrlOrId || '');
+  const sheetName = String(payload.sheetName || CONSECUTIVE_SHEET).trim() || CONSECUTIVE_SHEET;
+  const prefix = String(payload.prefix || 'SST').replace(/[^A-Za-z0-9_-]/g,'').toUpperCase() || 'SST';
+  if (id) {
+    const ss = SpreadsheetApp.openById(id); // valida permisos antes de guardar
+    props.setProperty('CONSECUTIVE_SPREADSHEET_ID', ss.getId());
+  } else props.deleteProperty('CONSECUTIVE_SPREADSHEET_ID');
+  props.setProperty('CONSECUTIVE_SHEET_NAME', sheetName);
+  props.setProperty('CONSECUTIVE_PREFIX', prefix);
+  return consecutiveStatus_(user);
+}
+
 function nextConsecutive_(user, payload) {
-  const lock = LockService.getScriptLock(); lock.waitLock(15000);
+  const lock = LockService.getScriptLock(); lock.waitLock(30000);
   try {
-    const props = PropertiesService.getScriptProperties();
+    const cfg = consecutiveConfig_();
+    const ss = consecutiveSpreadsheet_();
+    const info = locateConsecutiveSheet_(ss);
     const year = new Date().getFullYear();
-    const key = 'CONSECUTIVE_' + year;
-    const next = Number(props.getProperty(key) || '0') + 1;
-    props.setProperty(key, String(next));
-    return { consecutive: 'SST-' + year + '-' + next };
+    const documentKey = String(payload.documentKey || payload.hash || '').trim();
+    const scan = scanConsecutives_(info, year, cfg.prefix, documentKey);
+    if (scan.existing) {
+      const existingNumber=parseConsecutiveNumber_(scan.existing,year,cfg.prefix);
+      const existingFormatted=/^\d+$/.test(scan.existing)?(cfg.prefix+'-'+year+'-'+existingNumber):scan.existing;
+      ledgerSave_(documentKey, existingFormatted, ss.getId(), info.sheet.getName());
+      return { consecutive:existingFormatted, reused:true, source:'Google Sheets', sheetName:info.sheet.getName() };
+    }
+    const ledgerExisting = ledgerLookup_(documentKey, ss.getId(), info.sheet.getName());
+    if (ledgerExisting && consecutiveExists_(info, ledgerExisting)) {
+      return { consecutive:ledgerExisting, reused:true, source:'Google Sheets + control', sheetName:info.sheet.getName() };
+    }
+    const next = scan.max + 1;
+    const consecutive = cfg.prefix + '-' + year + '-' + next;
+    appendConsecutive_(info, {
+      number:next, consecutive:consecutive, year:year, date:String(payload.date||''), name:String(payload.name||''),
+      identification:String(payload.identification||''), role:String(payload.role||''), exam:String(payload.exam||''),
+      sourceFile:String(payload.sourceFile||''), documentKey:documentKey, user:String(user.username||'')
+    });
+    SpreadsheetApp.flush();
+    ledgerSave_(documentKey, consecutive, ss.getId(), info.sheet.getName());
+    return { consecutive:consecutive, reused:false, source:'Google Sheets', sheetName:info.sheet.getName(), number:next };
   } finally { lock.releaseLock(); }
 }
 
@@ -405,24 +635,51 @@ function cleanEmailList_(value) {
 
 function validEmail_(value) { return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(value || '').trim()); }
 
+function authorizePortalServices() {
+  const quota = MailApp.getRemainingDailyQuota();
+  const db = getDb_();
+  DriveApp.getRootFolder().getName();
+  return { authorized:true, mailQuota:quota, database:db.getName() };
+}
+
+function mailStatus_(user) {
+  let quota = 0;
+  try { quota = MailApp.getRemainingDailyQuota(); }
+  catch (error) { throw new Error('Apps Script no tiene autorización para enviar correo: ' + (error.message || error)); }
+  let sender = '';
+  try { sender = Session.getEffectiveUser().getEmail() || ''; } catch (_) {}
+  return { ready:quota > 0, remainingQuota:quota, sender:sender, service:'MailApp', detail:quota > 0 ? 'Servicio autorizado.' : 'La cuota diaria de correo está agotada.' };
+}
+
 function sendEmail_(user, payload) {
   const to = String(payload.to || '').trim().toLowerCase();
-  if (!validEmail_(to)) throw new Error('El destinatario no es válido: ' + (to || '(vacío)'));
   const cc = cleanEmailList_(payload.cc).filter(validEmail_).filter(function(x){return x !== to;});
   const bcc = cleanEmailList_(payload.bcc).filter(validEmail_).filter(function(x){return x !== to && cc.indexOf(x) < 0;});
   const subject = String(payload.subject || '').trim(), body = String(payload.body || '').trim();
-  if (!subject || !body) throw new Error('El asunto y el cuerpo del mensaje no pueden estar vacíos.');
   const attachment = payload.attachment || {};
-  if (!attachment.base64 || !attachment.filename) throw new Error('No se recibió el documento adjunto.');
-  const bytes = Utilities.base64Decode(String(attachment.base64));
-  const blob = Utilities.newBlob(bytes, String(attachment.mime || 'application/octet-stream'), String(attachment.filename));
-  const options = { attachments:[blob], name:'Seguridad y Salud en el Trabajo - JER S.A.' };
-  if (cc.length) options.cc = cc.join(',');
-  if (bcc.length) options.bcc = bcc.join(',');
-  GmailApp.sendEmail(to, subject, body, options);
-  const history = { date:new Date().toISOString(), sourceFile:String(payload.sourceFile||''), worker:String(payload.personName||''), to:to, cc:cc.join(', '), bcc:bcc.join(', '), subject:subject, file:String(attachment.filename), status:'Enviado', detail:'Mensaje aceptado por GmailApp.' };
-  appendEmailHistory_(history);
-  return { sent:true, history:history, remainingQuota:MailApp.getRemainingDailyQuota() };
+  const baseHistory = { date:new Date().toISOString(), sourceFile:String(payload.sourceFile||''), worker:String(payload.personName||''), to:to, cc:cc.join(', '), bcc:bcc.join(', '), subject:subject, file:String(attachment.filename||'') };
+  try {
+    if (!validEmail_(to)) throw new Error('El destinatario no es válido: ' + (to || '(vacío)'));
+    if (!subject || !body) throw new Error('El asunto y el cuerpo del mensaje no pueden estar vacíos.');
+    if (!attachment.base64 || !attachment.filename) throw new Error('No se recibió el documento adjunto.');
+    const bytes = Utilities.base64Decode(String(attachment.base64));
+    if (bytes.length > 20 * 1024 * 1024) throw new Error('El adjunto supera 20 MB. Reduce el tamaño antes de enviarlo.');
+    const blob = Utilities.newBlob(bytes, String(attachment.mime || 'application/octet-stream'), String(attachment.filename));
+    const options = {
+      to:to, subject:subject, body:body, htmlBody:String(body).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>'),
+      attachments:[blob], name:'Seguridad y Salud en el Trabajo - JER S.A.'
+    };
+    if (cc.length) options.cc = cc.join(',');
+    if (bcc.length) options.bcc = bcc.join(',');
+    MailApp.sendEmail(options);
+    const history = Object.assign({}, baseHistory, { status:'Enviado', detail:'Mensaje aceptado por MailApp.' });
+    appendEmailHistory_(history);
+    return { sent:true, history:history, remainingQuota:MailApp.getRemainingDailyQuota() };
+  } catch (error) {
+    const history = Object.assign({}, baseHistory, { status:'Error', detail:error && error.message ? error.message : String(error) });
+    try { appendEmailHistory_(history); } catch (_) {}
+    throw new Error(history.detail);
+  }
 }
 
 function appendEmailHistory_(h) {

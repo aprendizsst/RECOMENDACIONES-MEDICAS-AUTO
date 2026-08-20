@@ -18,7 +18,7 @@
 5. Pulsa **Implementar** y autoriza los permisos solicitados.
 6. Copia la URL que termina en `/exec`.
 
-> El código crea automáticamente una hoja de cálculo llamada **Portal SST - Base de datos** para usuarios e historial de correo.
+> El código crea automáticamente una hoja de cálculo llamada **Portal SST - Base de datos** para usuarios, historial de correo y control interno de consecutivos.
 
 ## 2. Publicar en GitHub Pages
 
@@ -74,15 +74,33 @@ Si Gemini no está configurado o falla, el portal conserva el **respaldo local**
 
 ## 5. Correo
 
-El nuevo backend utiliza `GmailApp` del propietario de la implementación de Apps Script. Por eso:
+El backend V5 utiliza `MailApp` del propietario de la implementación de Apps Script. Por eso:
 
 - ya no hay que escribir contraseña SMTP en el navegador;
 - no hay contraseña de aplicación expuesta;
 - CC y CCO siguen disponibles;
 - asunto y cuerpo siguen siendo editables;
-- los envíos quedan registrados en la hoja `HistorialCorreos`.
+- los envíos y los errores quedan registrados en la hoja `HistorialCorreos`;
+- la sección Correo muestra la cuota disponible del servicio.
+
+**Después de actualizar de V4 a V5**, vuelve a publicar Apps Script como **Nueva versión** y acepta los nuevos permisos. Si el portal muestra `Correo requiere autorización`, abre Apps Script, selecciona `authorizePortalServices` y ejecútala una vez con la cuenta propietaria; acepta los permisos y vuelve a desplegar una nueva versión.
 
 El remitente real será la cuenta de Google que desplegó Apps Script, sujeto a las políticas y cuotas de Google Workspace/Gmail.
+
+## 5.1 Conectar la hoja real de consecutivos
+
+Con una cuenta administradora del portal:
+
+1. Abre **Configuración → Consecutivos**.
+2. Pega la URL completa o el ID del Google Sheet que contiene los consecutivos.
+3. Escribe el nombre de la pestaña donde están los consecutivos.
+4. Define el prefijo, por ejemplo `SST`.
+5. Pulsa **Guardar y validar**.
+6. El panel debe mostrar cuántos consecutivos válidos leyó y cuál sería el siguiente.
+
+El backend reconoce encabezados como `CONSECUTIVO`, `CONSECUTIVO SST`, `NUMERO DE CONSECUTIVO`, `NRO CONSECUTIVO`, `NO CONSECUTIVO` y `NUMERO`. Si encuentra una columna `AÑO/ANIO/YEAR`, respeta el año actual. El cálculo se realiza bajo `LockService` para evitar duplicados cuando varias personas generan documentos al mismo tiempo.
+
+Si la pestaña indicada existe pero no tiene una columna de consecutivo reconocible, el backend crea `Consecutivos_BOT` en ese mismo libro y no modifica la tabla existente.
 
 ## 6. Plantilla y firma
 
@@ -111,11 +129,13 @@ La URL `/exec` normalmente se conserva, por lo que GitHub Pages no requiere camb
 1. Crear administrador.
 2. Guardar Gemini.
 3. Cargar un PDF con texto.
-4. Cargar el mismo PDF de nuevo y comprobar que se reutilice la caché.
-5. Editar un dato y generar PDF.
-6. Volver a otra persona y regresar: la vista debe conservarse.
-7. Generar todo el lote y descargar ZIP.
-8. Cargar plantilla Word y firma.
-9. Enviar un correo de prueba a una cuenta controlada.
-10. Abrir la aplicación desde otro navegador/usuario y comprobar que plantilla y firma compartidas se sincronicen.
-11. Revisar **Control y tablas → Correos**.
+4. Cargar el mismo PDF de nuevo y comprobar que se reutilice la caché del motor actual.
+5. Pulsar **Reanalizar** y confirmar que fuerza una extracción nueva sin duplicar el registro.
+6. Editar un dato y generar PDF.
+7. Volver a otra persona y regresar: la vista debe conservarse.
+8. Generar todo el lote y descargar ZIP.
+9. Cargar plantilla Word y firma.
+10. Validar la hoja real de consecutivos desde Configuración y comprobar que el número generado coincide con el siguiente de Sheets.
+11. Enviar un correo de prueba a una cuenta controlada y revisar el indicador de cuota.
+12. Abrir la aplicación desde otro navegador/usuario y comprobar que plantilla y firma compartidas se sincronicen.
+13. Revisar **Control y tablas → Correos** y confirmar que registra tanto éxitos como errores.

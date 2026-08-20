@@ -7,13 +7,14 @@ Migración del proyecto original **Streamlit/Python** a una aplicación web est�
 - Acceso con usuarios y cambio de contraseña.
 - Carga múltiple de certificados PDF.
 - Extracción local de texto con PDF.js.
-- OCR automático de respaldo con Tesseract.js.
-- **Parser clínico original en Python**, ejecutado dentro del navegador con Pyodide (`parser.py`).
-- Validación visual opcional con Gemini.
+- OCR automático de respaldo con Tesseract.js y reconstrucción espacial de líneas para tablas/columnas.
+- Relectura OCR estructural automática cuando la primera extracción queda en calidad baja.
+- **Parser clínico multiformato en Python**, derivado del motor original y ejecutado dentro del navegador con Pyodide (`parser.py`).
+- Validación visual opcional con Gemini más una segunda auditoría específica de recomendaciones, remisiones, vigilancia y observaciones.
 - Edición de nombre, identificación, correo, cargo, tipo de examen, fecha, lugar, exámenes, recomendaciones, vigilancia, observaciones y remisiones.
 - Recomendaciones organizadas por examen.
 - Detección de fragmentos pendientes de revisión.
-- Caché persistente por huella SHA-256: un PDF ya procesado no vuelve a analizarse.
+- Caché persistente por huella SHA-256 **y versión del motor**: no reprocesa innecesariamente, pero reanaliza automáticamente documentos antiguos cuando cambia el extractor.
 - Vista de todos los PDF originales sin reprocesarlos.
 - Generación individual y masiva.
 - Caché de documentos generados: solo se regenera cuando cambian datos, plantilla, firma o formato.
@@ -43,12 +44,23 @@ Google Apps Script (iframe oculto)
 ├─ llamadas a Gemini
 ├─ consecutivos
 ├─ plantilla/firma compartidas en Drive
-├─ GmailApp
+├─ MailApp
 └─ historial en Google Sheets
 ```
 
 El usuario permanece en la URL `github.io`. Apps Script funciona únicamente como backend seguro y no muestra otra interfaz.
 
+
+
+## Motor clínico V5
+
+La extracción ya no depende de posiciones fijas ni de un único proveedor. Primero identifica las secciones clínicas y después aplica reglas especializadas. Las recomendaciones por examen solo se relacionan cuando existe vínculo estructural explícito; las remisiones no se confunden con controles; el ingreso a PVE/SVE no se infiere a partir de una recomendación; y los bloques mixtos de observaciones/recomendaciones se separan por función.
+
+Cada documento recibe `calidad_extraccion` y `campos_revision`. Si la lectura embebida es débil, el portal puede repetir la lectura con OCR estructural. Con IA activa, Gemini realiza además una segunda auditoría visual y la fusión exige evidencia del PDF.
+
+## Consecutivos reales de Google Sheets
+
+En **Configuración → Consecutivos** el administrador puede pegar la URL/ID del libro real, indicar la pestaña y el prefijo. El backend lee el mayor consecutivo, usa bloqueo para concurrencia y mantiene trazabilidad por hash del PDF. Si la hoja configurada no tiene una columna reconocible de consecutivo, se crea `Consecutivos_BOT` sin alterar la tabla original.
 
 ## Recursos institucionales compartidos
 
@@ -60,7 +72,7 @@ En modo local, plantilla y firma permanecen únicamente en el navegador.
 
 - La salida **Word (.docx)** sigue partiendo de la plantilla institucional y conserva los placeholders.
 - La salida **PDF** se genera de forma nativa en el navegador con los datos validados; GitHub Pages no puede ejecutar LibreOffice para convertir el DOCX. Por eso el contenido se conserva, pero la maquetación PDF no es una conversión pixel a pixel del Word.
-- El envío ya no usa una contraseña SMTP almacenada en el cliente. Lo realiza `GmailApp` desde la cuenta que despliega Apps Script, manteniendo destinatario, CC, CCO, asunto, cuerpo, adjunto e historial.
+- El envío ya no usa una contraseña SMTP almacenada en el cliente. Lo realiza `MailApp` desde la cuenta que despliega Apps Script, manteniendo destinatario, CC, CCO, asunto, cuerpo, adjunto e historial.
 
 ## Inicio rápido
 

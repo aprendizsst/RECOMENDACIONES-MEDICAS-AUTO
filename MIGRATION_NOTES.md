@@ -23,8 +23,8 @@ Este archivo documenta cómo se trasladó la funcionalidad de `legacy/app_stream
 | Generación individual/masiva | generador incremental + caché | Conservada/mejorada |
 | Descarga individual | Blob URL | Conservada |
 | ZIP colectivo | JSZip | Conservada |
-| SMTP + contraseña de aplicación | GmailApp en Apps Script | Sustituida por alternativa segura |
-| CC / CCO | GmailApp | Conservada |
+| SMTP + contraseña de aplicación | MailApp en Apps Script | Sustituida por alternativa segura |
+| CC / CCO | MailApp | Conservada |
 | Asunto/cuerpo editables | editor web | Conservada |
 | Historial de correo | Google Sheets + copia local | Conservada |
 | Tablas mezcladas con flujo | sección independiente “Control y tablas” | Mejorada |
@@ -39,8 +39,13 @@ GitHub Pages no ejecuta LibreOffice, por lo que el PDF no puede obtenerse convir
 
 ### Correo
 
-Se elimina el uso de contraseña SMTP en el navegador. El envío lo ejecuta la cuenta Google propietaria del despliegue de Apps Script mediante `GmailApp`, manteniendo Para, CC, CCO, asunto, cuerpo, adjunto e historial.
+Se elimina el uso de contraseña SMTP en el navegador. El envío lo ejecuta la cuenta Google propietaria del despliegue de Apps Script mediante `MailApp`, manteniendo Para, CC, CCO, asunto, cuerpo, adjunto e historial.
 
 ## Privacidad operacional
 
 Los PDF y documentos generados se guardan en IndexedDB del navegador. Solo se envía el PDF al backend/Gemini cuando la validación visual está habilitada. Antes de usar el portal con información médica real, la organización debe validar sus requisitos internos de privacidad, tratamiento de datos y uso de servicios externos.
+
+
+## V5 — endurecimiento del motor
+
+La versión V5 incorpora extracción por secciones clínicas, relectura OCR estructural, auditoría visual doble con Gemini, caché versionada, validación directa de consecutivos en Google Sheets bajo bloqueo y correo mediante MailApp con diagnóstico de cuota y trazabilidad de errores. Consulta `PATCH_V5.md` para el detalle.

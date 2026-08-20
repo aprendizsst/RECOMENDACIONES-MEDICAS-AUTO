@@ -8,19 +8,25 @@
       return { template, signature };
     }
 
-    async ensureConsecutive(data) {
+    async ensureConsecutive(documentRow, data) {
       if (data.consecutivo) return data.consecutivo;
-      try {
-        if (SSTBackend.ready && await SSTDB.getAuth('sessionToken', '')) {
-          const result = await SSTBackend.call('nextConsecutive', { name: data.nombre, role: data.cargo, exam: data.tipo_examen, date: data.fecha });
-          data.consecutivo = result.consecutive;
-          return data.consecutivo;
-        }
-      } catch (error) { console.warn('Consecutivo remoto no disponible:', error); }
+      const token = await SSTDB.getAuth('sessionToken', '');
+      if (SSTBackend.url && token) {
+        // Con backend activo no se permite caer silenciosamente a un consecutivo local: evitaría duplicados.
+        const result = await SSTBackend.call('nextConsecutive', {
+          name: data.nombre, identification: data.identificacion, role: data.cargo, exam: data.tipo_examen, date: data.fecha,
+          sourceFile: documentRow.fileName || '', documentKey: documentRow.hash || documentRow.id || ''
+        }, { timeout: 60000 });
+        if (!result?.consecutive) throw new Error('Google Sheets no devolvió un consecutivo válido.');
+        data.consecutivo = result.consecutive;
+        data.consecutivo_fuente = result.source || 'Google Sheets';
+        return data.consecutivo;
+      }
       let current = Number(await SSTDB.getSetting('localSequence', 0)) || 0;
       current += 1;
       await SSTDB.setSetting('localSequence', current);
-      data.consecutivo = `SST-${new Date().getFullYear()}-${current}`;
+      data.consecutivo = `LOCAL-${new Date().getFullYear()}-${current}`;
+      data.consecutivo_fuente = 'Local';
       return data.consecutivo;
     }
 
@@ -59,8 +65,39 @@
       return SSTUtils.sha256Text(JSON.stringify(body));
     }
 
+    async ensureJsPdf() {
+      if (window.jspdf?.jsPDF) return window.jspdf.jsPDF;
+      if (window.jsPDF) return window.jsPDF;
+
+      const urls = [
+        'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js',
+        'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js',
+        'https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js'
+      ];
+
+      for (const src of urls) {
+        try {
+          await new Promise((resolve, reject) => {
+            const existing = [...document.scripts].find((script) => script.src === src);
+            if (existing && window.jspdf?.jsPDF) return resolve();
+            const script = existing || document.createElement('script');
+            const timer = setTimeout(() => reject(new Error(`Tiempo agotado cargando ${src}`)), 12000);
+            script.onload = () => { clearTimeout(timer); resolve(); };
+            script.onerror = () => { clearTimeout(timer); reject(new Error(`No se pudo cargar ${src}`)); };
+            if (!existing) { script.src = src; script.async = true; document.head.appendChild(script); }
+          });
+          if (window.jspdf?.jsPDF) return window.jspdf.jsPDF;
+          if (window.jsPDF) return window.jsPDF;
+        } catch (error) {
+          console.warn('Carga de jsPDF fallida:', error);
+        }
+      }
+
+      throw new Error('No fue posible cargar el motor PDF (jsPDF). Verifica la conexión a Internet y recarga la aplicación.');
+    }
+
     async generatePdf(data, signatureAsset) {
-      const { jsPDF } = window.jspdf;
+      const jsPDF = await this.ensureJsPdf();
       const doc = new jsPDF({ unit: 'mm', format: 'a4', compress: true });
       const pageW = 210, pageH = 297, left = 20, right = 20, bottom = 20, maxW = pageW - left - right;
       let y = 18;
@@ -115,7 +152,7 @@
 
     async generate(documentRow, formatOverride = null) {
       const data = SSTUtils.deepClone(documentRow.data || {});
-      await this.ensureConsecutive(data);
+      await this.ensureConsecutive(documentRow, data);
       documentRow.data.consecutivo = data.consecutivo;
       documentRow.updatedAt = new Date().toISOString();
       await SSTDB.put(SSTDB.stores.documents, documentRow);
