@@ -53,7 +53,7 @@ function doPost(e) {
     '<script>(function(){var message=' + json + ';' +
     'try{window.top.postMessage(message,"*");}' +
     'catch(e){try{window.parent.postMessage(message,"*");}catch(_){}}' +
-    '})();<\\/script></body></html>';
+    '})();</script></body></html>';
 
   return HtmlService.createHtmlOutput(html)
     .setTitle('Portal SST · Respuesta segura')

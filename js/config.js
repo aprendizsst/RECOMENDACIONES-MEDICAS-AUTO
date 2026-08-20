@@ -1,7 +1,7 @@
 window.APP_CONFIG = Object.freeze({
   appName: "Portal SST · Recomendaciones Médicas",
   companyName: "JER S.A.",
-  version: "2026.08.20-github-pages-v2",
+  version: "2026.08.20-github-pages-v3",
   pipelineVersion: "2026-08-10.7-web",
   defaultBackendUrl: "https://script.google.com/macros/s/AKfycbxNrv9iLsaY3lIQ6evDnf3zWVanKJNhBzDDiGWkP3W1hX6JYR0vSjMz9lINUYCg_UqVsw/exec",
   defaultGeminiModel: "gemini-3.6-flash",

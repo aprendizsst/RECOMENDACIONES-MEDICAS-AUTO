@@ -415,7 +415,7 @@
     try {
       const url=SSTBackend.normalizeUrl($(inputId).value); if (!url) throw new Error('Ingresa la URL del backend.');
       await SSTDB.setSetting('backendUrl',url); $('setupBackendUrl').value=url; $('settingsBackendUrl').value=url;
-      const ready=await SSTBackend.setUrl(url); if (!ready) throw new Error('La Web App no respondió. Verifica que esté implementada como “Cualquiera” y uses la URL /exec.');
+      const ready=await SSTBackend.setUrl(url); if (!ready) throw new Error(SSTBackend.lastError || 'La Web App no respondió. Verifica que esté implementada como “Cualquiera” y uses la URL /exec.');
       state.backendInfo=await SSTBackend.ping(); setBackendUi(true); toast('Backend conectado',state.backendInfo.message||'Google Apps Script está listo.','success'); return true;
     } catch (error) { setBackendUi(false,error.message); toast('No se pudo conectar',error.message,'error',7000); return false; }
   }

@@ -5,6 +5,7 @@
       this.iframe = null; // Se conserva por compatibilidad con la interfaz existente.
       this.pending = new Map();
       this.sequence = 0;
+      this.lastError = '';
       window.addEventListener('message', (event) => this._onMessage(event));
     }
 
@@ -59,9 +60,11 @@
       this.url = this.normalizeUrl(url);
       if (!this.url) return false;
       try {
-        await this.call('ping', {}, { timeout: 20000, skipSession: true });
+        await this.call('ping', {}, { timeout: 25000, skipSession: true });
+        this.lastError = '';
         return true;
       } catch (error) {
+        this.lastError = error?.message || String(error);
         console.warn('Prueba del backend:', error);
         return false;
       }
