@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#07111f" />
+  <meta name="description" content="Portal SST para extracción, revisión, generación y envío de recomendaciones médicas ocupacionales." />
+  <title>Portal SST · Recomendaciones Médicas</title>
+  <link rel="preconnect" href="https://cdnjs.cloudflare.com" />
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" />
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <div id="appBoot" class="boot-screen">
+    <div class="boot-orb"></div>
+    <div class="boot-card">
+      <div class="brand-mark">SST</div>
+      <h1>Portal de Recomendaciones Médicas</h1>
+      <p id="bootMessage">Inicializando almacenamiento seguro…</p>
+      <div class="progress-track"><div id="bootProgress" class="progress-bar" style="width: 12%"></div></div>
+    </div>
+  </div>
+
+  <div id="authView" class="auth-view hidden">
+    <div class="auth-shell">
+      <section class="auth-brand-panel">
+        <div class="auth-brand-top">
+          <div class="brand-mark large">SST</div>
+          <div>
+            <span class="eyebrow">JER S.A.</span>
+            <h1>Portal de Medicina Preventiva</h1>
+          </div>
+        </div>
+        <div class="auth-copy">
+          <h2>Procesamiento documental con control humano.</h2>
+          <p>Extrae certificados, valida con IA, corrige los datos, genera recomendaciones y gestiona envíos desde una sola interfaz.</p>
+        </div>
+        <div class="auth-feature-grid">
+          <article><span>01</span><strong>Extracción híbrida</strong><small>PDF.js + OCR + parser clínico + Gemini.</small></article>
+          <article><span>02</span><strong>Sin reprocesos</strong><small>Caché persistente por huella del archivo.</small></article>
+          <article><span>03</span><strong>Lotes completos</strong><small>Previsualiza, descarga y comprime en ZIP.</small></article>
+          <article><span>04</span><strong>Correo controlado</strong><small>CC, CCO, confirmación e historial.</small></article>
+        </div>
+        <div class="security-note">Las claves de Gemini y el envío de correo permanecen en Google Apps Script, no en GitHub Pages.</div>
+      </section>
+
+      <section class="auth-card">
+        <div class="auth-card-header">
+          <span class="status-dot" id="authBackendDot"></span>
+          <span id="authBackendStatus">Backend sin configurar</span>
+        </div>
+
+        <div id="backendSetupPanel" class="setup-panel hidden">
+          <h3>Conectar servicio seguro</h3>
+          <p>Antes del primer ingreso, pega la URL <code>/exec</code> de tu Web App de Google Apps Script.</p>
+          <label class="field-label" for="setupBackendUrl">URL del backend</label>
+          <div class="field-inline">
+            <input id="setupBackendUrl" type="url" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off" />
+            <button id="btnTestBackend" class="btn secondary" type="button">Probar</button>
+          </div>
+          <button id="btnSaveBackend" class="btn primary full" type="button">Guardar conexión</button>
+          <button id="btnLocalMode" class="link-button" type="button">Entrar en modo local de revisión</button>
+        </div>
+
+        <div id="authForms" class="hidden">
+          <div class="segmented" role="tablist">
+            <button class="segmented-btn active" data-auth-tab="login">Ingresar</button>
+            <button class="segmented-btn" data-auth-tab="register">Crear cuenta</button>
+            <button class="segmented-btn" data-auth-tab="password">Cambiar clave</button>
+          </div>
+
+          <form id="loginForm" class="auth-form" data-auth-panel="login">
+            <div class="auth-title"><h3>Acceso seguro</h3><p>Ingresa con tu usuario del Portal SST.</p></div>
+            <label class="field-label">Usuario</label>
+            <input id="loginUser" required autocomplete="username" />
+            <label class="field-label">Contraseña</label>
+            <input id="loginPassword" type="password" required autocomplete="current-password" />
+            <button class="btn primary full" type="submit">Ingresar al sistema</button>
+          </form>
+
+          <form id="registerForm" class="auth-form hidden" data-auth-panel="register">
+            <div class="auth-title"><h3>Nueva cuenta</h3><p id="registerHint">Registra un usuario para acceder al portal.</p></div>
+            <label class="field-label">Nombre completo</label>
+            <input id="registerName" required autocomplete="name" />
+            <label class="field-label">Usuario</label>
+            <input id="registerUser" required autocomplete="username" />
+            <label class="field-label">Contraseña</label>
+            <input id="registerPassword" type="password" minlength="6" required autocomplete="new-password" />
+            <button class="btn primary full" type="submit">Crear cuenta</button>
+          </form>
+
+          <form id="passwordForm" class="auth-form hidden" data-auth-panel="password">
+            <div class="auth-title"><h3>Actualizar contraseña</h3><p>La contraseña nueva debe tener mínimo 6 caracteres.</p></div>
+            <label class="field-label">Usuario</label>
+            <input id="passwordUser" required autocomplete="username" />
+            <label class="field-label">Contraseña actual</label>
+            <input id="passwordOld" type="password" required autocomplete="current-password" />
+            <label class="field-label">Nueva contraseña</label>
+            <input id="passwordNew" type="password" minlength="6" required autocomplete="new-password" />
+            <button class="btn primary full" type="submit">Actualizar contraseña</button>
+          </form>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div id="appView" class="app-shell hidden">
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-mark">SST</div>
+        <div><strong>Portal SST</strong><small>JER S.A.</small></div>
+      </div>
+
+      <nav class="nav-menu" aria-label="Navegación principal">
+        <button class="nav-item active" data-view="dashboard"><span>⌂</span><div><strong>Inicio</strong><small>Resumen operativo</small></div></button>
+        <button class="nav-item" data-view="documents"><span>▣</span><div><strong>Documentos</strong><small>Cargar y revisar</small></div></button>
+        <button class="nav-item" data-view="originals"><span>◫</span><div><strong>PDF originales</strong><small>Vista masiva</small></div></button>
+        <button class="nav-item" data-view="generated"><span>⇩</span><div><strong>Generados</strong><small>Vista y descargas</small></div></button>
+        <button class="nav-item" data-view="email"><span>✉</span><div><strong>Correo</strong><small>Envío controlado</small></div></button>
+        <button class="nav-item" data-view="control"><span>▤</span><div><strong>Control y tablas</strong><small>Seguimiento técnico</small></div></button>
+        <button class="nav-item" data-view="settings"><span>⚙</span><div><strong>Configuración</strong><small>Plantilla y servicios</small></div></button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="connection-card"><span id="backendDot" class="status-dot"></span><div><strong id="backendLabel">Backend</strong><small id="backendDetail">Verificando…</small></div></div>
+        <button id="btnLogout" class="nav-item logout"><span>↪</span><div><strong>Cerrar sesión</strong><small id="sidebarUsername">Usuario</small></div></button>
+      </div>
+    </aside>
+
+    <main class="main-area">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button id="btnSidebar" class="icon-btn mobile-only" aria-label="Abrir menú">☰</button>
+          <div><span class="eyebrow" id="viewEyebrow">PANEL OPERATIVO</span><h1 id="viewTitle">Inicio</h1></div>
+        </div>
+        <div class="topbar-actions">
+          <div class="engine-pill" id="enginePill"><span class="pulse"></span><span id="engineText">Motor listo</span></div>
+          <button id="btnQuickUpload" class="btn primary small">＋ Cargar PDF</button>
+          <div class="user-chip"><div class="avatar" id="userAvatar">U</div><div><strong id="topUsername">Usuario</strong><small id="topUserRole">Portal SST</small></div></div>
+        </div>
+      </header>
+
+      <div class="content-area">
+        <section class="view-section active" data-view-panel="dashboard">
+          <div class="hero-panel">
+            <div>
+              <span class="eyebrow">FLUJO INTELIGENTE SST</span>
+              <h2>Recomendaciones médicas, sin reprocesos.</h2>
+              <p>Carga certificados, valida la información, conserva las vistas ya procesadas y prepara el lote completo desde un único panel.</p>
+              <div class="hero-actions"><button class="btn primary" data-go="documents">Cargar certificados</button><button class="btn secondary" data-go="generated">Ver documentos listos</button></div>
+            </div>
+            <div class="hero-visual">
+              <div class="orbital"><div class="orbital-core">SST</div><span class="orbit o1">PDF</span><span class="orbit o2">IA</span><span class="orbit o3">DOCX</span><span class="orbit o4">MAIL</span></div>
+            </div>
+          </div>
+
+          <div class="metric-grid">
+            <article class="metric-card"><span class="metric-icon">▣</span><div><small>Certificados cargados</small><strong id="metricDocs">0</strong><em id="metricDocsSub">Sin documentos</em></div></article>
+            <article class="metric-card"><span class="metric-icon">✓</span><div><small>Validados con IA</small><strong id="metricAi">0</strong><em>Con respaldo local</em></div></article>
+            <article class="metric-card"><span class="metric-icon">⇩</span><div><small>Documentos listos</small><strong id="metricGenerated">0</strong><em id="metricCache">0 reutilizados</em></div></article>
+            <article class="metric-card"><span class="metric-icon">✉</span><div><small>Correos enviados</small><strong id="metricEmails">0</strong><em>Historial reciente</em></div></article>
+          </div>
+
+          <div class="dashboard-grid">
+            <article class="panel span-2">
+              <div class="panel-head"><div><span class="eyebrow">ESTADO DEL LOTE</span><h3>Documentos recientes</h3></div><button class="link-button" data-go="documents">Abrir revisión</button></div>
+              <div id="recentDocuments" class="empty-state compact"><span>▣</span><strong>No hay documentos cargados</strong><p>Los certificados aparecerán aquí al cargarlos.</p></div>
+            </article>
+            <article class="panel">
+              <div class="panel-head"><div><span class="eyebrow">CALIDAD</span><h3>Motor de análisis</h3></div></div>
+              <div class="quality-stack">
+                <div><span>Parser clínico local</span><strong id="qualityParser">Listo</strong></div>
+                <div><span>OCR de respaldo</span><strong id="qualityOcr">Activo</strong></div>
+                <div><span>Validación Gemini</span><strong id="qualityGemini">Pendiente</strong></div>
+                <div><span>Caché IndexedDB</span><strong id="qualityCache">Activo</strong></div>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="view-section" data-view-panel="documents">
+          <div class="toolbar-row">
+            <div><span class="eyebrow">INGESTA Y REVISIÓN</span><h2>Documentos</h2><p>Los PDF ya procesados se reutilizan automáticamente por huella digital.</p></div>
+            <div class="toolbar-actions"><button id="btnGenerateAll" class="btn secondary">Generar lote</button><button id="btnUploadMain" class="btn primary">＋ Cargar PDF</button></div>
+          </div>
+
+          <input id="pdfInput" type="file" accept="application/pdf,.pdf" multiple hidden />
+          <div id="dropZone" class="drop-zone">
+            <div class="drop-icon">⇧</div><div><strong>Arrastra aquí uno o varios certificados PDF</strong><span>o haz clic para seleccionarlos · se conservarán en el navegador</span></div>
+          </div>
+          <div id="processingBanner" class="processing-banner hidden"><div><span class="spinner"></span><div><strong id="processingTitle">Procesando documentos</strong><small id="processingDetail">Preparando motor…</small></div></div><div class="progress-track"><div id="processingProgress" class="progress-bar"></div></div></div>
+
+          <div class="workspace-grid">
+            <aside class="document-list-panel panel">
+              <div class="panel-head"><div><span class="eyebrow">PERSONAS</span><h3>Certificados cargados</h3></div><span id="docListCount" class="count-badge">0</span></div>
+              <div class="search-box"><span>⌕</span><input id="documentSearch" placeholder="Buscar por nombre, cédula o archivo…" /></div>
+              <div id="documentList" class="document-list"><div class="empty-state compact"><span>▣</span><strong>Sin certificados</strong></div></div>
+            </aside>
+
+            <section class="editor-panel panel">
+              <div id="editorEmpty" class="empty-state tall"><span>✦</span><strong>Selecciona un certificado</strong><p>Cuando cargues un PDF podrás revisar aquí la extracción y corregir cualquier dato antes de generar el documento.</p></div>
+              <div id="editorContent" class="hidden">
+                <div class="editor-head"><div><span class="eyebrow" id="editorSourceFile">PDF</span><h3 id="editorPersonTitle">Trabajador</h3><p id="editorValidationMode">Respaldo local</p></div><div class="editor-status"><span id="editorStatusDot" class="status-dot success"></span><strong id="editorStatusText">Revisión disponible</strong></div></div>
+
+                <div class="form-grid three">
+                  <label><span>Trabajador</span><input id="fieldName" data-field="nombre" /></label>
+                  <label><span>Identificación</span><input id="fieldId" data-field="identificacion" /></label>
+                  <label><span>Correo</span><input id="fieldEmail" data-field="correo" type="email" /></label>
+                  <label><span>Cargo</span><input id="fieldRole" data-field="cargo" /></label>
+                  <label><span>Tipo de examen</span><input id="fieldExamType" data-field="tipo_examen" /></label>
+                  <label><span>Fecha</span><input id="fieldDate" data-field="fecha" type="date" /></label>
+                  <label><span>Lugar</span><input id="fieldPlace" data-field="lugar" /></label>
+                  <label class="span-2"><span>Programa de vigilancia epidemiológica</span><input id="fieldSurveillance" data-field="vigilancia_programa" /></label>
+                </div>
+
+                <div class="editor-section">
+                  <div class="section-head"><div><span class="section-number">1</span><div><strong>Exámenes realizados</strong><small>Uno por línea</small></div></div></div>
+                  <textarea id="fieldExams" rows="5"></textarea>
+                </div>
+
+                <div class="editor-section">
+                  <div class="section-head"><div><span class="section-number">2</span><div><strong>Recomendaciones por examen</strong><small>Revisa cada bloque antes de generar</small></div></div><button id="btnAddRecommendationGroup" class="btn ghost small">＋ Grupo</button></div>
+                  <div id="recommendationGroups" class="recommendation-groups"></div>
+                </div>
+
+                <div class="form-grid two">
+                  <label><span>Observaciones</span><textarea id="fieldObservations" data-field="observaciones" rows="4"></textarea></label>
+                  <label><span>Remisiones</span><textarea id="fieldReferrals" data-field="remisiones" rows="4"></textarea></label>
+                </div>
+
+                <div id="pendingReviewBox" class="review-warning hidden"><strong>Fragmentos pendientes de revisión</strong><textarea id="fieldPending" rows="4"></textarea></div>
+
+                <div class="editor-actions">
+                  <div class="save-state" id="saveState">Cambios guardados automáticamente</div>
+                  <div><button id="btnPreviewOriginal" class="btn secondary">Ver PDF original</button><button id="btnGenerateSelected" class="btn primary">Generar vista previa</button></div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view-section" data-view-panel="originals">
+          <div class="toolbar-row"><div><span class="eyebrow">FUENTES ORIGINALES</span><h2>PDF originales</h2><p>Navega entre todos los certificados sin volver a procesarlos.</p></div><button id="btnIndexOriginals" class="btn secondary">Actualizar índice</button></div>
+          <div class="viewer-grid">
+            <aside class="panel"><div class="panel-head"><div><span class="eyebrow">ÍNDICE</span><h3>Archivos cargados</h3></div></div><div id="originalList" class="document-list"></div></aside>
+            <section class="panel viewer-panel"><div class="viewer-toolbar"><div><strong id="originalViewerTitle">Selecciona un PDF</strong><small id="originalViewerMeta">—</small></div><div><button id="btnPrevPage" class="icon-btn">←</button><span id="originalPageLabel">0 / 0</span><button id="btnNextPage" class="icon-btn">→</button><button id="btnDownloadOriginal" class="btn secondary small">Descargar original</button></div></div><div class="pdf-stage"><canvas id="originalCanvas"></canvas><div id="originalEmpty" class="empty-state tall"><span>◫</span><strong>Sin PDF seleccionado</strong></div></div></section>
+          </div>
+        </section>
+
+        <section class="view-section" data-view-panel="generated">
+          <div class="toolbar-row"><div><span class="eyebrow">SALIDAS</span><h2>Documentos generados</h2><p>Todo lo generado permanece disponible al cambiar de persona.</p></div><div class="toolbar-actions"><button id="btnDownloadZip" class="btn secondary">Descargar ZIP</button><button id="btnGenerateAll2" class="btn primary">Generar / actualizar lote</button></div></div>
+          <div class="viewer-grid generated-grid">
+            <aside class="panel"><div class="panel-head"><div><span class="eyebrow">PAQUETE</span><h3>Archivos listos</h3></div><span id="generatedCount" class="count-badge">0</span></div><div id="generatedList" class="document-list"></div></aside>
+            <section class="panel viewer-panel"><div class="viewer-toolbar"><div><strong id="generatedViewerTitle">Selecciona un documento</strong><small id="generatedViewerMeta">—</small></div><div><button id="btnDownloadGenerated" class="btn primary small">Descargar</button></div></div><div id="generatedPreview" class="generated-preview"><div class="empty-state tall"><span>⇩</span><strong>Aún no hay vista previa</strong><p>Genera un documento desde la sección Documentos.</p></div></div></section>
+          </div>
+        </section>
+
+        <section class="view-section" data-view-panel="email">
+          <div class="toolbar-row"><div><span class="eyebrow">DISTRIBUCIÓN</span><h2>Correo</h2><p>Selecciona destinatarios, edita el mensaje y confirma explícitamente el envío.</p></div><span id="emailBackendBadge" class="status-badge">Backend requerido</span></div>
+          <div class="email-grid">
+            <section class="panel">
+              <div class="panel-head"><div><span class="eyebrow">1. DESTINATARIOS</span><h3>Documentos a enviar</h3></div><button id="btnSelectAllEmail" class="link-button">Seleccionar todos</button></div>
+              <div id="emailRecipients" class="recipient-list"><div class="empty-state compact"><span>✉</span><strong>No hay documentos generados</strong></div></div>
+              <div class="form-grid two compact-grid">
+                <label><span>CC</span><input id="emailCc" placeholder="correo1@empresa.com; correo2@empresa.com" /></label>
+                <label><span>CCO</span><input id="emailBcc" placeholder="copiaoculta@empresa.com" /></label>
+              </div>
+            </section>
+            <section class="panel">
+              <div class="panel-head"><div><span class="eyebrow">2. MENSAJE</span><h3>Plantilla editable</h3></div></div>
+              <label><span>Asunto</span><input id="emailSubject" /></label>
+              <label><span>Cuerpo del mensaje</span><textarea id="emailBody" rows="12"></textarea></label>
+              <div class="template-help">Puedes usar <code>{nombre}</code> y <code>{identificacion}</code>.</div>
+              <div id="emailPreviewCards" class="email-preview-cards"></div>
+              <label class="confirm-check"><input id="emailConfirm" type="checkbox" /><span>Confirmo que revisé destinatarios, copias, asunto, mensaje y adjuntos.</span></label>
+              <button id="btnSendEmails" class="btn primary full">Confirmar y enviar correos</button>
+            </section>
+          </div>
+        </section>
+
+        <section class="view-section" data-view-panel="control">
+          <div class="toolbar-row"><div><span class="eyebrow">TRAZABILIDAD</span><h2>Control y tablas</h2><p>Las tablas técnicas están separadas del flujo de revisión para mantener la interfaz limpia.</p></div></div>
+          <div class="segmented control-tabs">
+            <button class="segmented-btn active" data-control-tab="validation">Validación</button>
+            <button class="segmented-btn" data-control-tab="package">Paquete final</button>
+            <button class="segmented-btn" data-control-tab="originals">PDF originales</button>
+            <button class="segmented-btn" data-control-tab="emails">Correos</button>
+          </div>
+          <div class="panel table-panel"><div id="controlTable"></div></div>
+        </section>
+
+        <section class="view-section" data-view-panel="settings">
+          <div class="toolbar-row"><div><span class="eyebrow">CONFIGURACIÓN</span><h2>Configuración</h2><p>Los archivos locales se guardan en IndexedDB; las credenciales sensibles permanecen en Apps Script.</p></div></div>
+          <div class="settings-grid">
+            <section class="panel"><div class="panel-head"><div><span class="eyebrow">SERVICIO SEGURO</span><h3>Google Apps Script</h3></div><span id="settingsBackendStatus" class="status-badge">Sin conexión</span></div><label><span>URL de la Web App</span><input id="settingsBackendUrl" type="url" /></label><div class="button-row"><button id="btnSettingsTestBackend" class="btn secondary">Probar conexión</button><button id="btnSettingsSaveBackend" class="btn primary">Guardar</button></div><p class="help-text">Usa la URL terminada en <code>/exec</code>. El portal la carga en un iframe seguro para evitar problemas CORS.</p></section>
+
+            <section class="panel"><div class="panel-head"><div><span class="eyebrow">INTELIGENCIA ARTIFICIAL</span><h3>Gemini</h3></div></div><label class="switch-row"><div><strong>Validación visual automática</strong><small>Envía el PDF al backend para validación con Gemini.</small></div><input id="toggleAi" type="checkbox" /></label><label><span>Modelo</span><input id="settingsGeminiModel" /></label><label><span>API key de Gemini</span><input id="settingsGeminiKey" type="password" placeholder="Déjala vacía para conservar la guardada" /></label><button id="btnSaveAi" class="btn primary full">Guardar configuración de IA</button></section>
+
+            <section class="panel"><div class="panel-head"><div><span class="eyebrow">DOCUMENTO INSTITUCIONAL</span><h3>Plantilla Word</h3></div><span id="templateStatus" class="status-badge">Plantilla base</span></div><input id="templateInput" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden /><button id="btnUploadTemplate" class="upload-card"><span>W</span><div><strong>Cargar plantilla .docx</strong><small id="templateFileName">Se usa la plantilla base incluida</small></div></button><div class="button-row"><button id="btnRemoveTemplate" class="btn ghost">Restaurar base</button></div><p class="help-text">Se reconocen los mismos marcadores del proyecto Streamlit: <code>{{NOMBRE DE LA PERSONA}}</code>, <code>{{LISTA DE EXAMENES REALIZADOS}}</code>, <code>{{Recomendaciones médicas}}</code>, etc.</p></section>
+
+            <section class="panel"><div class="panel-head"><div><span class="eyebrow">FIRMA</span><h3>Firma autorizada</h3></div><span id="signatureStatus" class="status-badge">Sin firma</span></div><input id="signatureInput" type="file" accept="image/png,image/jpeg" hidden /><button id="btnUploadSignature" class="upload-card"><span>✎</span><div><strong>Cargar firma PNG/JPG</strong><small id="signatureFileName">Se insertará antes del coordinador SST</small></div></button><div id="signaturePreview" class="signature-preview hidden"></div><button id="btnRemoveSignature" class="btn ghost">Quitar firma</button></section>
+
+            <section class="panel"><div class="panel-head"><div><span class="eyebrow">GENERACIÓN</span><h3>Preferencias</h3></div></div><label><span>Formato de salida por defecto</span><select id="settingsOutputFormat"><option value="PDF">PDF</option><option value="Word">Word (.docx)</option><option value="HTML">HTML</option></select></label><label class="switch-row"><div><strong>OCR automático</strong><small>Se activa en páginas con poco texto extraíble.</small></div><input id="toggleOcr" type="checkbox" /></label><button id="btnSavePreferences" class="btn primary full">Guardar preferencias</button></section>
+
+            <section class="panel"><div class="panel-head"><div><span class="eyebrow">CUENTA</span><h3>Seguridad</h3></div></div><label><span>Contraseña actual</span><input id="settingsOldPassword" type="password" /></label><label><span>Nueva contraseña</span><input id="settingsNewPassword" type="password" /></label><button id="btnChangePasswordLogged" class="btn secondary full">Cambiar contraseña</button><button id="btnClearLocalData" class="btn danger full">Borrar caché local del navegador</button></section>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div id="toastStack" class="toast-stack" aria-live="polite"></div>
+  <div id="modalRoot"></div>
+  <iframe id="backendBridge" class="backend-bridge" title="Backend seguro"></iframe>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.2/jspdf.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.27.7/full/pyodide.js"></script>
+  <script src="js/config.js"></script>
+  <script src="js/utils.js"></script>
+  <script src="js/db.js"></script>
+  <script src="js/backend.js"></script>
+  <script src="js/parser-bridge.js"></script>
+  <script src="js/pdf-service.js"></script>
+  <script src="js/docx-engine.js"></script>
+  <script src="js/generator.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

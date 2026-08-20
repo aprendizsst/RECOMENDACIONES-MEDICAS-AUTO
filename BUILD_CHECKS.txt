@@ -1,0 +1,11 @@
+Validaciones ejecutadas antes de entregar
+- parser.py: py_compile OK
+- parser original: smoke test OK
+- js/*.js: node --check OK
+- backend/Code.gs: sintaxis JavaScript/V8 OK
+- index.html: IDs únicos y referencias locales existentes
+- backend/appsscript.json: JSON válido
+- manifest.webmanifest: JSON válido
+- assets/default-template.docx: estructura ZIP/DOCX válida
+
+Nota: las integraciones externas (Gemini, GmailApp, Drive y Apps Script) requieren autorización/configuración en la cuenta Google del despliegue y no pueden ejecutarse sin esas credenciales.
