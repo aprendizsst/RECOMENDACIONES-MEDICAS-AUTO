@@ -49,3 +49,7 @@ Los PDF y documentos generados se guardan en IndexedDB del navegador. Solo se en
 ## V5 — endurecimiento del motor
 
 La versión V5 incorpora extracción por secciones clínicas, relectura OCR estructural, auditoría visual doble con Gemini, caché versionada, validación directa de consecutivos en Google Sheets bajo bloqueo y correo mediante MailApp con diagnóstico de cuota y trazabilidad de errores. Consulta `PATCH_V5.md` para el detalle.
+
+## V6 — preservación de estructura documental
+
+La V6 corrige el aplanamiento prematuro del PDF. PDF.js/OCR reconstruyen filas según geometría X/Y y entregan columnas reales al parser. El motor distingue matriz de exámenes + columnas generales, tabla examen/recomendación y formatos genéricos por secciones. Observaciones, remisiones y PVE/SVE tienen reglas propias y la segunda lectura Gemini es correctiva. Se añadieron eliminación individual/masiva del lote, auditoría IA manual y regresiones automatizadas para los dos formatos de referencia.

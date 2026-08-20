@@ -215,7 +215,7 @@
     const query = $('documentSearch')?.value || '';
     const docs = state.documents.filter((d) => documentMatches(d, query));
     $('docListCount').textContent = state.documents.length;
-    $('documentList').innerHTML = docs.length ? docs.map((d) => `<div class="document-item ${d.id === state.selectedDocId ? 'active' : ''}" data-doc-id="${d.id}"><div class="doc-icon">PDF</div><div class="doc-main"><strong>${SSTUtils.escapeHtml(d.data?.nombre || 'Sin nombre')}</strong><small>${SSTUtils.escapeHtml(d.fileName)}</small><em>${d.dirty ? 'Editado · requiere actualizar salida' : `${d.data?.modo_validacion || (d.data?.validado_ia ? 'IA + motor local' : 'Motor local')} · Calidad ${d.data?.calidad_extraccion || '—'}`}</em></div><span class="mini-status ${d.data?.validado_ia ? 'ai' : (d.dirty ? 'warn' : '')}"></span></div>`).join('') : '<div class="empty-state compact"><span>▣</span><strong>Sin certificados</strong></div>';
+    $('documentList').innerHTML = docs.length ? docs.map((d) => `<div class="document-item ${d.id === state.selectedDocId ? 'active' : ''}" data-doc-id="${d.id}"><div class="doc-icon">PDF</div><div class="doc-main"><strong>${SSTUtils.escapeHtml(d.data?.nombre || 'Sin nombre')}</strong><small>${SSTUtils.escapeHtml(d.fileName)}</small><em>${d.dirty ? 'Editado · requiere actualizar salida' : `${d.data?.modo_validacion || (d.data?.validado_ia ? 'IA + motor local' : 'Motor local')} · Calidad ${d.data?.calidad_extraccion || '—'}`}${d.aiError ? ' · IA con alerta' : ''}</em></div><span class="mini-status ${d.data?.validado_ia ? 'ai' : (d.dirty ? 'warn' : '')}"></span><button class="item-delete" type="button" data-delete-doc="${d.id}" title="Eliminar este archivo" aria-label="Eliminar ${SSTUtils.escapeHtml(d.fileName)}">×</button></div>`).join('') : '<div class="empty-state compact"><span>▣</span><strong>Sin certificados</strong></div>';
   }
 
   function selectedDocument() { return state.documents.find((d) => d.id === state.selectedDocId) || null; }
@@ -236,7 +236,7 @@
     $('editorEmpty').classList.toggle('hidden', !!doc); $('editorContent').classList.toggle('hidden', !doc);
     if (!doc) return;
     const d = doc.data || {};
-    $('editorSourceFile').textContent = doc.fileName; $('editorPersonTitle').textContent = d.nombre || 'Trabajador sin identificar'; $('editorValidationMode').textContent = `${d.modo_validacion || 'Motor local'} · Calidad ${d.calidad_extraccion || '—'}`;
+    $('editorSourceFile').textContent = doc.fileName; $('editorPersonTitle').textContent = d.nombre || 'Trabajador sin identificar'; $('editorValidationMode').textContent = `${d.modo_validacion || 'Motor local'} · ${d.perfil_documental || 'Formato genérico'} · Calidad ${d.calidad_extraccion || '—'}`;
     $('editorStatusText').textContent = doc.dirty ? 'Cambios sin regenerar' : ((d.campos_revision || []).length ? `Revisar: ${(d.campos_revision || []).join(', ')}` : 'Revisión disponible'); $('editorStatusDot').className = `status-dot ${doc.dirty ? 'warn' : 'success'}`;
     const values = { fieldName:d.nombre, fieldId:d.identificacion, fieldEmail:d.correo, fieldRole:d.cargo, fieldExamType:d.tipo_examen, fieldDate:d.fecha || SSTUtils.todayIso(), fieldPlace:d.lugar || 'Tunja', fieldSurveillance:d.vigilancia_programa, fieldObservations:d.observaciones, fieldReferrals:d.remisiones };
     for (const [id,value] of Object.entries(values)) $(id).value = value ?? '';
@@ -364,7 +364,7 @@
         if (aiEnabled && state.backendOnline && !state.localMode && file.size <= APP_CONFIG.maxGeminiPdfMb*1024*1024) {
           try {
             updateProcessing(`Validando con IA ${index+1} de ${files.length}`, `${file.name} · lectura visual completa`, (index+.82)/files.length);
-            const aiData = await SSTBackend.call('geminiAnalyze', { fileName:file.name, pdfBase64:SSTUtils.arrayBufferToBase64(buffer), text:extraction.text.slice(0,30000), localData:data, model:await SSTDB.getSetting('geminiModel', APP_CONFIG.defaultGeminiModel) }, { timeout: 195000 });
+            const aiData = await SSTBackend.call('geminiAnalyze', { fileName:file.name, pdfBase64:SSTUtils.arrayBufferToBase64(buffer), text:extraction.text.slice(0,50000), localData:data, model:await SSTDB.getSetting('geminiModel', APP_CONFIG.defaultGeminiModel) }, { timeout: 195000 });
             data = await SSTParser.fuse(data, aiData, extraction.text);
           } catch (error) { aiError = error.message; console.warn('Gemini:', error); data.modo_validacion = 'Respaldo local · IA no disponible'; }
         } else if (aiEnabled && file.size > APP_CONFIG.maxGeminiPdfMb*1024*1024) aiError = `PDF mayor a ${APP_CONFIG.maxGeminiPdfMb} MB; se usó análisis local.`;
@@ -383,6 +383,84 @@
   }
 
   function updateProcessing(title, detail, ratio) { $('processingTitle').textContent = title; $('processingDetail').textContent = detail; $('processingProgress').style.width = `${Math.round(Math.max(0,Math.min(1,ratio))*100)}%`; }
+
+  async function deleteDocumentById(id, options = {}) {
+    const doc = state.documents.find((d) => d.id === id);
+    if (!doc) return;
+    if (!options.skipConfirm && !confirm(`¿Eliminar "${doc.fileName}"?\n\nSe borrarán el PDF cargado, su extracción y la salida generada de ESTE navegador. No se libera ni reutiliza un consecutivo que ya haya sido asignado en el backend.`)) return;
+    await SSTDB.delete(SSTDB.stores.documents, id);
+    await SSTDB.delete(SSTDB.stores.outputs, id);
+    state.documents = state.documents.filter((d) => d.id !== id);
+    state.outputs = state.outputs.filter((o) => o.id !== id && o.documentId !== id);
+    if (state.selectedDocId === id) state.selectedDocId = state.documents[0]?.id || null;
+    if (state.selectedOriginalId === id) { state.selectedOriginalId = state.documents[0]?.id || null; state.originalPage = 1; }
+    if (state.selectedOutputId === id) state.selectedOutputId = state.outputs[0]?.id || null;
+    await renderAll();
+    if (!options.silent) toast('Archivo eliminado', `${doc.fileName} ya no participa en el lote ni en la caché.`, 'success');
+  }
+
+  async function clearLoadedDocuments() {
+    if (!state.documents.length && !state.outputs.length) return toast('Sin archivos', 'No hay documentos cargados para eliminar.', 'warn');
+    if (!confirm(`¿Eliminar los ${state.documents.length} archivo(s) cargados?\n\nEsto limpia PDFs, extracciones y documentos generados de ESTE navegador. Se conservan usuario, configuración, plantilla, firma e historial de correos.`)) return;
+    await SSTDB.clear(SSTDB.stores.documents);
+    await SSTDB.clear(SSTDB.stores.outputs);
+    state.documents = [];
+    state.outputs = [];
+    state.selectedDocId = null;
+    state.selectedOriginalId = null;
+    state.selectedOutputId = null;
+    state.originalPage = 1;
+    state.lastCacheStats = { generated:0, reused:0 };
+    await renderAll();
+    toast('Lote limpiado', 'Los archivos cargados y sus extracciones fueron eliminados. Puedes iniciar un lote limpio.', 'success', 6500);
+  }
+
+  async function validateSelectedWithAi() {
+    syncEditorToState();
+    const doc = selectedDocument();
+    if (!doc?.blob) return toast('Sin PDF', 'Selecciona un certificado para validar con IA.', 'warn');
+    if (!state.backendOnline || state.localMode) return toast('Backend requerido', 'Conecta Google Apps Script para usar la auditoría visual con IA.', 'warn');
+    if (doc.size > APP_CONFIG.maxGeminiPdfMb * 1024 * 1024) return toast('PDF demasiado grande', `La validación visual admite hasta ${APP_CONFIG.maxGeminiPdfMb} MB.`, 'warn');
+    try {
+      $('processingBanner').classList.remove('hidden');
+      updateProcessing('Auditoría visual con IA', `${doc.fileName} · relectura completa del PDF`, .18);
+      if (!state.parserReady) { await SSTParser.init((msg,p) => updateProcessing('Preparando motor clínico', msg, p*.15)); state.parserReady = true; }
+      let sourceText = doc.text || '';
+      if (!sourceText) {
+        const extraction = await SSTPdf.extract(doc.blob, { ocrEnabled:true, onProgress:(p) => updateProcessing('Reconstruyendo documento', `${doc.fileName} · ${p.message}`, .18 + .28*((p.page||1)/Math.max(1,p.total||1))) });
+        sourceText = extraction.text;
+        doc.text = sourceText;
+        doc.pageCount = extraction.pageCount;
+        doc.usedOcr = extraction.usedOcr;
+      }
+      const buffer = await doc.blob.arrayBuffer();
+      updateProcessing('Auditoría visual con IA', `${doc.fileName} · comprobando tablas, remisiones, PVE y observaciones`, .62);
+      const aiData = await SSTBackend.call('geminiAnalyze', {
+        fileName:doc.fileName,
+        pdfBase64:SSTUtils.arrayBufferToBase64(buffer),
+        text:sourceText.slice(0,50000),
+        localData:doc.data,
+        model:await SSTDB.getSetting('geminiModel', APP_CONFIG.defaultGeminiModel)
+      }, { timeout:195000 });
+      doc.data = await SSTParser.fuse(doc.data, aiData, sourceText);
+      doc.aiError = '';
+      doc.pipelineVersion = APP_CONFIG.pipelineVersion;
+      doc.updatedAt = new Date().toISOString();
+      doc.dirty = state.outputs.some((o) => o.id === doc.id || o.documentId === doc.id);
+      await SSTDB.put(SSTDB.stores.documents, doc);
+      updateProcessing('Auditoría completada', `${doc.data?.modo_validacion || 'IA + motor clínico'} · calidad ${doc.data?.calidad_extraccion || '—'}`, 1);
+      await renderAll();
+      toast('Validación IA completada', `${doc.data?.nombre || doc.fileName} · ${(doc.data?.campos_revision || []).length ? 'quedan campos por revisar' : 'sin alertas estructurales'}.`, (doc.data?.campos_revision || []).length ? 'warn' : 'success', 7500);
+    } catch (error) {
+      doc.aiError = error.message;
+      doc.updatedAt = new Date().toISOString();
+      await SSTDB.put(SSTDB.stores.documents, doc);
+      renderDocumentList(); renderEditor();
+      toast('La IA no pudo validar', error.message, 'error', 9000);
+    } finally {
+      setTimeout(() => $('processingBanner').classList.add('hidden'), 500);
+    }
+  }
 
   async function reanalyzeSelected() {
     const doc = selectedDocument();
@@ -421,7 +499,7 @@
   }
 
   function renderOriginals() {
-    $('originalList').innerHTML = state.documents.length ? state.documents.map((d) => `<div class="document-item ${d.id===state.selectedOriginalId?'active':''}" data-original-id="${d.id}"><div class="doc-icon">PDF</div><div class="doc-main"><strong>${SSTUtils.escapeHtml(d.data?.nombre || d.fileName)}</strong><small>${d.pageCount || '—'} página(s) · ${SSTUtils.bytesLabel(d.size)}</small><em>${d.usedOcr?'OCR utilizado':'Texto PDF'}</em></div></div>`).join('') : '<div class="empty-state compact"><span>◫</span><strong>Sin PDF originales</strong></div>';
+    $('originalList').innerHTML = state.documents.length ? state.documents.map((d) => `<div class="document-item ${d.id===state.selectedOriginalId?'active':''}" data-original-id="${d.id}"><div class="doc-icon">PDF</div><div class="doc-main"><strong>${SSTUtils.escapeHtml(d.data?.nombre || d.fileName)}</strong><small>${d.pageCount || '—'} página(s) · ${SSTUtils.bytesLabel(d.size)}</small><em>${d.usedOcr?'OCR utilizado':'Texto PDF'}</em></div><button class="item-delete" type="button" data-delete-doc="${d.id}" title="Eliminar este archivo">×</button></div>`).join('') : '<div class="empty-state compact"><span>◫</span><strong>Sin PDF originales</strong></div>';
     const doc = state.documents.find((d) => d.id === state.selectedOriginalId);
     if (!doc) { $('originalViewerTitle').textContent='Selecciona un PDF'; $('originalViewerMeta').textContent='—'; $('originalPageLabel').textContent='0 / 0'; $('originalCanvas').style.display='none'; $('originalEmpty').classList.remove('hidden'); return; }
     $('originalViewerTitle').textContent = doc.data?.nombre || doc.fileName; $('originalViewerMeta').textContent = doc.fileName; $('originalPageLabel').textContent = `${state.originalPage} / ${doc.pageCount || 1}`; $('originalEmpty').classList.add('hidden'); $('originalCanvas').style.display='block';
@@ -571,11 +649,11 @@
     $('btnLogout').addEventListener('click',async()=>{try{if(state.backendOnline&&!state.localMode)await SSTBackend.call('logout');}catch(_){}await SSTDB.setAuth('sessionToken','');state.user=null;state.localMode=false;await showAuth();});
     const openFile=()=>$('pdfInput').click(); $('btnQuickUpload').addEventListener('click',()=>{showView('documents');openFile();}); $('btnUploadMain').addEventListener('click',openFile); $('dropZone').addEventListener('click',openFile); $('pdfInput').addEventListener('change',(e)=>{handleFiles(e.target.files);e.target.value='';});
     for(const type of ['dragenter','dragover'])$('dropZone').addEventListener(type,(e)=>{e.preventDefault();$('dropZone').classList.add('dragover');}); for(const type of ['dragleave','drop'])$('dropZone').addEventListener(type,(e)=>{e.preventDefault();$('dropZone').classList.remove('dragover');}); $('dropZone').addEventListener('drop',(e)=>handleFiles(e.dataTransfer.files));
-    $('documentSearch').addEventListener('input',renderDocumentList); $('documentList').addEventListener('click',(e)=>{const item=e.target.closest('[data-doc-id]');if(item){state.selectedDocId=item.dataset.docId;renderDocumentList();renderEditor();}}); $('recentDocuments').addEventListener('click',(e)=>{const item=e.target.closest('[data-dashboard-doc]');if(item){state.selectedDocId=item.dataset.dashboardDoc;showView('documents');renderDocumentList();renderEditor();}});
+    $('documentSearch').addEventListener('input',renderDocumentList); $('documentList').addEventListener('click',async(e)=>{const del=e.target.closest('[data-delete-doc]');if(del){e.preventDefault();e.stopPropagation();await deleteDocumentById(del.dataset.deleteDoc);return;}const item=e.target.closest('[data-doc-id]');if(item){state.selectedDocId=item.dataset.docId;renderDocumentList();renderEditor();}}); $('recentDocuments').addEventListener('click',(e)=>{const item=e.target.closest('[data-dashboard-doc]');if(item){state.selectedDocId=item.dataset.dashboardDoc;showView('documents');renderDocumentList();renderEditor();}});
     ['fieldName','fieldId','fieldEmail','fieldRole','fieldExamType','fieldDate','fieldPlace','fieldSurveillance','fieldObservations','fieldReferrals','fieldExams','fieldPending'].forEach((id)=>$(id).addEventListener('input',syncEditorToState));
     $('recommendationGroups').addEventListener('input',syncEditorToState); $('recommendationGroups').addEventListener('click',(e)=>{if(e.target.classList.contains('remove-group')){e.target.closest('.recommendation-card').remove();syncEditorToState();}}); $('btnAddRecommendationGroup').addEventListener('click',()=>{const wrapper=document.createElement('div');wrapper.className='recommendation-card';wrapper.innerHTML='<div class="recommendation-card-head"><input class="rec-exam" value="Nuevo examen" aria-label="Examen"><button class="remove-group" type="button">×</button></div><textarea class="rec-text" rows="4" placeholder="Una recomendación por línea"></textarea>';$('recommendationGroups').appendChild(wrapper);wrapper.querySelector('.rec-exam').select();syncEditorToState();});
-    $('btnReanalyzeSelected').addEventListener('click',reanalyzeSelected); $('btnGenerateSelected').addEventListener('click',generateSelected); $('btnGenerateAll').addEventListener('click',generateAll); $('btnGenerateAll2').addEventListener('click',generateAll); $('btnPreviewOriginal').addEventListener('click',()=>openOriginalModal(selectedDocument()));
-    $('originalList').addEventListener('click',(e)=>{const item=e.target.closest('[data-original-id]');if(item){state.selectedOriginalId=item.dataset.originalId;state.originalPage=1;renderOriginals();}}); $('btnPrevPage').addEventListener('click',()=>{if(state.originalPage>1){state.originalPage--;renderOriginals();}}); $('btnNextPage').addEventListener('click',()=>{const d=state.documents.find((x)=>x.id===state.selectedOriginalId);if(d&&state.originalPage<(d.pageCount||1)){state.originalPage++;renderOriginals();}}); $('btnDownloadOriginal').addEventListener('click',()=>{const d=state.documents.find((x)=>x.id===state.selectedOriginalId);if(d)SSTUtils.downloadBlob(d.blob,`ORIGINAL_${d.fileName}`);}); $('btnIndexOriginals').addEventListener('click',()=>{renderOriginals();toast('Índice actualizado',`${state.documents.length} PDF disponibles sin reprocesar.`,'success');});
+    $('btnDeleteSelected').addEventListener('click',()=>{const d=selectedDocument();if(d)deleteDocumentById(d.id);else toast('Sin selección','Selecciona un certificado.','warn');}); $('btnValidateAiSelected').addEventListener('click',validateSelectedWithAi); $('btnReanalyzeSelected').addEventListener('click',reanalyzeSelected); $('btnGenerateSelected').addEventListener('click',generateSelected); $('btnGenerateAll').addEventListener('click',generateAll); $('btnGenerateAll2').addEventListener('click',generateAll); $('btnPreviewOriginal').addEventListener('click',()=>openOriginalModal(selectedDocument())); $('btnClearLoaded').addEventListener('click',clearLoadedDocuments);
+    $('originalList').addEventListener('click',async(e)=>{const del=e.target.closest('[data-delete-doc]');if(del){e.preventDefault();e.stopPropagation();await deleteDocumentById(del.dataset.deleteDoc);return;}const item=e.target.closest('[data-original-id]');if(item){state.selectedOriginalId=item.dataset.originalId;state.originalPage=1;renderOriginals();}}); $('btnPrevPage').addEventListener('click',()=>{if(state.originalPage>1){state.originalPage--;renderOriginals();}}); $('btnNextPage').addEventListener('click',()=>{const d=state.documents.find((x)=>x.id===state.selectedOriginalId);if(d&&state.originalPage<(d.pageCount||1)){state.originalPage++;renderOriginals();}}); $('btnDownloadOriginal').addEventListener('click',()=>{const d=state.documents.find((x)=>x.id===state.selectedOriginalId);if(d)SSTUtils.downloadBlob(d.blob,`ORIGINAL_${d.fileName}`);}); $('btnIndexOriginals').addEventListener('click',()=>{renderOriginals();toast('Índice actualizado',`${state.documents.length} PDF disponibles sin reprocesar.`,'success');});
     $('generatedList').addEventListener('click',(e)=>{const item=e.target.closest('[data-output-id]');if(item){state.selectedOutputId=item.dataset.outputId;renderGenerated();}}); $('btnDownloadGenerated').addEventListener('click',()=>{const o=selectedOutput();if(o)SSTUtils.downloadBlob(o.blob,o.filename);}); $('btnDownloadZip').addEventListener('click',async()=>{if(!state.outputs.length)return toast('Sin archivos','No hay documentos para comprimir.','warn');try{const zip=await SSTGenerator.makeZip(state.outputs);SSTUtils.downloadBlob(zip,`Lote_SST_JER_SA_${SSTUtils.todayIso().replaceAll('-','')}.zip`);}catch(e){toast('No se pudo crear el ZIP',e.message,'error');}});
     $('emailRecipients').addEventListener('input',(e)=>{if(e.target.matches('.email-to')){const id=e.target.dataset.emailTo,d=state.documents.find((x)=>x.id===id);if(d){d.data.correo=e.target.value.trim();d.updatedAt=new Date().toISOString();SSTDB.put(SSTDB.stores.documents,d);}}updateEmailPreview();}); $('emailRecipients').addEventListener('change',updateEmailPreview); $('emailSubject').addEventListener('input',updateEmailPreview); $('emailBody').addEventListener('input',updateEmailPreview); $('btnSelectAllEmail').addEventListener('click',()=>{qsa('.email-select').forEach((x)=>x.checked=true);updateEmailPreview();}); $('btnSendEmails').addEventListener('click',sendEmails);
     qsa('[data-control-tab]').forEach((b)=>b.addEventListener('click',()=>{state.controlTab=b.dataset.controlTab;qsa('[data-control-tab]').forEach((x)=>x.classList.toggle('active',x===b));renderControlTable();}));

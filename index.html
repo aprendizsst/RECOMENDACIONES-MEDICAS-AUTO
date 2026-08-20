@@ -183,7 +183,7 @@
         <section class="view-section" data-view-panel="documents">
           <div class="toolbar-row">
             <div><span class="eyebrow">INGESTA Y REVISIÓN</span><h2>Documentos</h2><p>Los PDF ya procesados se reutilizan automáticamente por huella digital.</p></div>
-            <div class="toolbar-actions"><button id="btnGenerateAll" class="btn secondary">Generar lote</button><button id="btnUploadMain" class="btn primary">＋ Cargar PDF</button></div>
+            <div class="toolbar-actions"><button id="btnClearLoaded" class="btn danger">Eliminar cargados</button><button id="btnGenerateAll" class="btn secondary">Generar lote</button><button id="btnUploadMain" class="btn primary">＋ Cargar PDF</button></div>
           </div>
 
           <input id="pdfInput" type="file" accept="application/pdf,.pdf" multiple hidden />
@@ -234,7 +234,7 @@
 
                 <div class="editor-actions">
                   <div class="save-state" id="saveState">Cambios guardados automáticamente</div>
-                  <div><button id="btnReanalyzeSelected" class="btn ghost">↻ Reanalizar</button><button id="btnPreviewOriginal" class="btn secondary">Ver PDF original</button><button id="btnGenerateSelected" class="btn primary">Generar vista previa</button></div>
+                  <div><button id="btnDeleteSelected" class="btn danger">Eliminar archivo</button><button id="btnValidateAiSelected" class="btn secondary">✦ Validar con IA</button><button id="btnReanalyzeSelected" class="btn ghost">↻ Reanalizar</button><button id="btnPreviewOriginal" class="btn secondary">Ver PDF original</button><button id="btnGenerateSelected" class="btn primary">Generar vista previa</button></div>
                 </div>
               </div>
             </section>

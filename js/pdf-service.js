@@ -3,19 +3,58 @@
     pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
   }
 
+  function median(values) {
+    const arr = (values || []).filter(Number.isFinite).sort((a,b) => a-b);
+    if (!arr.length) return 0;
+    const mid = Math.floor(arr.length / 2);
+    return arr.length % 2 ? arr[mid] : (arr[mid - 1] + arr[mid]) / 2;
+  }
+
   function lineTextFromItems(items) {
+    // PDF.js suele fragmentar una misma frase en varios text-items. En V5 se
+    // insertaban 3 espacios entre TODOS los items y eso convertía fragmentos
+    // normales en columnas falsas. V6 usa geometría real (x, width, height).
+    const clean = (items || []).map((item) => {
+      const text = String(item.str || '').replace(/\s+/g, ' ').trim();
+      const x = Number(item.transform?.[4] ?? 0);
+      const y = Number(item.transform?.[5] ?? 0);
+      const width = Math.max(0, Number(item.width || 0));
+      const height = Math.max(1, Number(item.height || item.transform?.[3] || 10));
+      const charW = text ? (width / Math.max(1, text.length)) : 0;
+      return { text, x, y, width, height, charW };
+    }).filter((i) => i.text);
+    if (!clean.length) return '';
+
+    const rowTolerance = Math.max(1.8, median(clean.map((i) => i.height)) * 0.32);
     const rows = [];
-    for (const item of items || []) {
-      const text = String(item.str || '').trim();
-      if (!text) continue;
-      const x = item.transform?.[4] ?? 0;
-      const y = item.transform?.[5] ?? 0;
-      let row = rows.find((r) => Math.abs(r.y - y) <= 2.5);
-      if (!row) { row = { y, items: [] }; rows.push(row); }
-      row.items.push({ x, text });
+    for (const item of clean.sort((a,b) => b.y - a.y || a.x - b.x)) {
+      let row = rows.find((r) => Math.abs(r.y - item.y) <= rowTolerance);
+      if (!row) { row = { y:item.y, items:[] }; rows.push(row); }
+      row.items.push(item);
+      row.y = row.items.reduce((sum,x) => sum + x.y, 0) / row.items.length;
     }
     rows.sort((a,b) => b.y - a.y);
-    return rows.map((row) => row.items.sort((a,b) => a.x - b.x).map((i) => i.text).join('   ')).join('\n');
+
+    return rows.map((row) => {
+      const ordered = row.items.sort((a,b) => a.x - b.x);
+      const charWidths = ordered.map((i) => i.charW).filter((v) => v > 0.2);
+      const typicalChar = median(charWidths) || 5;
+      let out = '';
+      let prev = null;
+      for (const item of ordered) {
+        if (prev) {
+          const prevEnd = prev.x + Math.max(prev.width, prev.text.length * typicalChar);
+          const gap = item.x - prevEnd;
+          // Solo una separación física grande crea una frontera de columna.
+          if (gap > Math.max(22, typicalChar * 4.5)) out += '\t';
+          else if (gap > Math.max(1.2, typicalChar * 0.18)) out += ' ';
+          else if (!/[\s(/-]$/.test(out) && !/^[,.;:)]/.test(item.text)) out += ' ';
+        }
+        out += item.text;
+        prev = item;
+      }
+      return out.replace(/[ ]{2,}/g, ' ').trim();
+    }).filter(Boolean).join('\n');
   }
 
 
@@ -23,33 +62,38 @@
     const clean = (words || []).map((w) => {
       const text = String(w.text || '').trim();
       const box = w.bbox || {};
-      return { text, x: Number(box.x0 || 0), y: Number(box.y0 || 0), h: Math.max(1, Number((box.y1 || 0) - (box.y0 || 0))) };
+      return {
+        text,
+        x:Number(box.x0 || 0), y:Number(box.y0 || 0),
+        x1:Number(box.x1 || 0), y1:Number(box.y1 || 0),
+        h:Math.max(1, Number((box.y1 || 0) - (box.y0 || 0)))
+      };
     }).filter((w) => w.text);
     if (!clean.length) return '';
-    const heights = clean.map((w) => w.h).sort((a,b) => a-b);
-    const medianH = heights[Math.floor(heights.length / 2)] || 12;
-    const tolerance = Math.max(6, medianH * 0.65);
+    const medianH = median(clean.map((w) => w.h)) || 12;
+    const tolerance = Math.max(5, medianH * 0.58);
     const rows = [];
     for (const word of clean.sort((a,b) => a.y - b.y || a.x - b.x)) {
       let row = rows.find((r) => Math.abs(r.y - word.y) <= tolerance);
-      if (!row) { row = { y: word.y, words: [] }; rows.push(row); }
+      if (!row) { row = { y:word.y, words:[] }; rows.push(row); }
       row.words.push(word);
       row.y = row.words.reduce((sum,w) => sum + w.y, 0) / row.words.length;
     }
     rows.sort((a,b) => a.y - b.y);
     return rows.map((row) => {
       const ordered = row.words.sort((a,b) => a.x - b.x);
-      let out = '', lastEnd = null;
+      let out = '', prev = null;
       for (const word of ordered) {
-        if (lastEnd !== null) {
-          const gap = word.x - lastEnd;
-          out += gap > medianH * 2.0 ? '   ' : ' ';
+        if (prev) {
+          const gap = word.x - prev.x1;
+          if (gap > medianH * 2.6) out += '\t';
+          else if (gap > medianH * 0.12) out += ' ';
+          else if (!/[\s(/-]$/.test(out) && !/^[,.;:)]/.test(word.text)) out += ' ';
         }
         out += word.text;
-        const widthGuess = Math.max(medianH * 0.55 * word.text.length, medianH);
-        lastEnd = Math.max(lastEnd ?? 0, word.x + widthGuess);
+        prev = word;
       }
-      return out.trim();
+      return out.replace(/[ ]{2,}/g, ' ').trim();
     }).filter(Boolean).join('\n');
   }
 

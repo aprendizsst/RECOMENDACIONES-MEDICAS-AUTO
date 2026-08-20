@@ -1,31 +1,15 @@
-Validaciones ejecutadas antes de entregar — V5 (20/08/2026)
+Validaciones ejecutadas antes de entregar — V6 (20/08/2026)
 
-Sintaxis / estructura
-- parser.py: python -m py_compile OK
-- js/*.js: node --check OK en todos los módulos
-- backend/Code.gs: sintaxis JavaScript/V8 OK
-- index.html: 153 IDs únicos, sin duplicados
-- index.html: referencias locales verificadas; 0 archivos faltantes
-- backend/appsscript.json: JSON válido
-- manifest.webmanifest: JSON válido
-- assets/default-template.docx: estructura ZIP/DOCX válida
-
-Regresión sintética del motor clínico
-- formato tabla por examen: OK
-- matriz PVE SI/NO: OK; no infiere programas marcados NO
-- reinicio de contexto para recomendaciones generales: OK
-- bloque mixto observaciones/recomendaciones: OK
-- fusión conservadora contra asociación IA incorrecta: OK
-- IA no puede crear PVE solo por una recomendación auditiva sin evidencia de ingreso: OK
-
-Correcciones funcionales verificadas por código
-- consecutivos: eliminada dependencia inexistente SSTBackend.ready
-- consecutivos: lectura del máximo desde Google Sheets + LockService
-- consecutivos: soporte de columna de año y múltiples encabezados
-- consecutivos: ledger interno por hash para evitar duplicar el mismo PDF
-- caché: invalidación automática por pipelineVersion
-- OCR: relectura estructural de respaldo cuando la calidad local es insuficiente
-- correo: MailApp + validación + cuota + registro de éxito/error
-
-Limitación de pruebas
-Las operaciones reales de Gemini, MailApp, Google Drive y Google Sheets requieren la cuenta Google y permisos del despliegue del usuario. La sintaxis y el flujo fueron validados localmente, pero el envío real y la lectura de su hoja concreta deben probarse después de publicar la nueva versión de Apps Script y autorizar los scopes.
+[OK] parser.py compila con Python.
+[OK] tests/parser_regression.py supera los escenarios derivados de los dos formatos compartidos por el usuario.
+[OK] Formato matriz + 3 columnas: exámenes detectados; recomendaciones generales conservadas; mención interna de Optometría no reasignada; SVE visual detectado; observaciones negativas y remisiones negativas respetadas.
+[OK] Formato examen -> recomendación: relación por fila preservada; REALIZADO tratado como estado; Observaciones completas; remisiones NUTRICIÓN/MEDICINA GENERAL EPS; SVE visual.
+[OK] Prueba de IA adversarial: bloquea recomendación inventada, asociación errónea por palabra interna y PVE adicional sin evidencia.
+[OK] Todos los archivos js/*.js pasan node --check.
+[OK] backend/Code.gs pasa validación sintáctica JavaScript.
+[OK] index.html: 156 IDs, sin duplicados.
+[OK] index.html: sin referencias locales rotas.
+[OK] manifest.webmanifest y backend/appsscript.json son JSON válidos.
+[OK] assets/default-template.docx contiene una estructura DOCX válida.
+[OK] pipelineVersion = 2026-08-20.6-layout-audit para invalidar caché clínica anterior.
+[OK] Botones Eliminar archivo / Eliminar cargados / Validar con IA / Reanalizar conectados a eventos.

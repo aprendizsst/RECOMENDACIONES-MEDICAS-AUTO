@@ -74,7 +74,7 @@ Si Gemini no está configurado o falla, el portal conserva el **respaldo local**
 
 ## 5. Correo
 
-El backend V5 utiliza `MailApp` del propietario de la implementación de Apps Script. Por eso:
+El backend V6 utiliza `MailApp` del propietario de la implementación de Apps Script. Por eso:
 
 - ya no hay que escribir contraseña SMTP en el navegador;
 - no hay contraseña de aplicación expuesta;
@@ -83,7 +83,7 @@ El backend V5 utiliza `MailApp` del propietario de la implementación de Apps Sc
 - los envíos y los errores quedan registrados en la hoja `HistorialCorreos`;
 - la sección Correo muestra la cuota disponible del servicio.
 
-**Después de actualizar de V4 a V5**, vuelve a publicar Apps Script como **Nueva versión** y acepta los nuevos permisos. Si el portal muestra `Correo requiere autorización`, abre Apps Script, selecciona `authorizePortalServices` y ejecútala una vez con la cuenta propietaria; acepta los permisos y vuelve a desplegar una nueva versión.
+**Después de actualizar a V6**, vuelve a publicar Apps Script como **Nueva versión** y acepta los nuevos permisos. Si el portal muestra `Correo requiere autorización`, abre Apps Script, selecciona `authorizePortalServices` y ejecútala una vez con la cuenta propietaria; acepta los permisos y vuelve a desplegar una nueva versión.
 
 El remitente real será la cuenta de Google que desplegó Apps Script, sujeto a las políticas y cuotas de Google Workspace/Gmail.
 
@@ -139,3 +139,8 @@ La URL `/exec` normalmente se conserva, por lo que GitHub Pages no requiere camb
 11. Enviar un correo de prueba a una cuenta controlada y revisar el indicador de cuota.
 12. Abrir la aplicación desde otro navegador/usuario y comprobar que plantilla y firma compartidas se sincronicen.
 13. Revisar **Control y tablas → Correos** y confirmar que registra tanto éxitos como errores.
+
+
+## 9. Actualización V6 del motor clínico
+
+Después de actualizar el repositorio, usa **Eliminar cargados** o vuelve a subir los certificados problemáticos. La caché está versionada, por lo que un documento de V5 se reanaliza al cargarlo con V6. Para una comprobación manual adicional, selecciona el certificado y pulsa **Validar con IA**. Consulta `PATCH_V6.md` y `UPGRADE_V6.md`.

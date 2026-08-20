@@ -52,11 +52,11 @@ El usuario permanece en la URL `github.io`. Apps Script funciona únicamente com
 
 
 
-## Motor clínico V5
+## Motor clínico V6
 
-La extracción ya no depende de posiciones fijas ni de un único proveedor. Primero identifica las secciones clínicas y después aplica reglas especializadas. Las recomendaciones por examen solo se relacionan cuando existe vínculo estructural explícito; las remisiones no se confunden con controles; el ingreso a PVE/SVE no se infiere a partir de una recomendación; y los bloques mixtos de observaciones/recomendaciones se separan por función.
+La V6 conserva la geometría del PDF antes de analizarlo y detecta perfiles estructurales: **matriz de exámenes + columnas de recomendaciones**, **tabla examen → recomendación** y **secciones clínicas genéricas**. Las recomendaciones se relacionan con un examen solo por vínculo espacial/estructural explícito; los estados `REALIZADO` no se convierten en recomendaciones; `Observaciones:` se conserva como campo propio; las remisiones dentro de su bloque se leen como destinos; y PVE/SVE exige evidencia explícita.
 
-Cada documento recibe `calidad_extraccion` y `campos_revision`. Si la lectura embebida es débil, el portal puede repetir la lectura con OCR estructural. Con IA activa, Gemini realiza además una segunda auditoría visual y la fusión exige evidencia del PDF.
+Cada documento recibe `perfil_documental`, `calidad_extraccion` y `campos_revision`. Si la lectura embebida es débil, el portal puede repetir la lectura con OCR estructural. Con IA activa, Gemini realiza una segunda auditoría adversarial y la fusión exige evidencia específica para aceptar datos sensibles. La interfaz incorpora **Eliminar archivo**, **Eliminar cargados**, **Reanalizar** y **Validar con IA**.
 
 ## Consecutivos reales de Google Sheets
 

@@ -1,6 +1,6 @@
 const APP_NAME = 'Portal SST · Recomendaciones Médicas';
 const GEMINI_INTERACTIONS_URL = 'https://generativelanguage.googleapis.com/v1beta/interactions';
-const DEFAULT_GEMINI_MODEL = 'gemini-3.6-flash';
+const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash';
 const SESSION_HOURS = 8;
 const USER_SHEET = 'Usuarios';
 const EMAIL_SHEET = 'HistorialCorreos';
@@ -367,17 +367,16 @@ function uniqueStrings_(items) {
 }
 
 function mergeGeminiAudits_(first, second) {
+  // La segunda lectura es una auditoría correctiva, no otra fuente acumulativa.
   if (!second) return first;
   const out = Object.assign({}, first || {});
-  ['nombre','cargo','identificacion','correo','tipo_examen','lugar','fecha','observaciones','remisiones'].forEach(function(k){ if(String(second[k]||'').trim()) out[k]=second[k]; });
-  out.examenes_realizados = uniqueStrings_([].concat(first.examenes_realizados||[], second.examenes_realizados||[]));
-  out.recomendaciones_medicas = uniqueStrings_([].concat(first.recomendaciones_medicas||[], second.recomendaciones_medicas||[]));
-  out.vigilancia_programa = uniqueStrings_([].concat(first.vigilancia_programa||[], second.vigilancia_programa||[]));
-  const byExam = {};
-  function consume(map){ (map||[]).forEach(function(row){ if(!row||!row.examen)return; const key=String(row.examen).trim(); byExam[key]=uniqueStrings_([].concat(byExam[key]||[], row.recomendaciones||[])); }); }
-  consume(first.recomendaciones_por_examen); consume(second.recomendaciones_por_examen);
-  out.recomendaciones_por_examen = Object.keys(byExam).map(function(k){return {examen:k,recomendaciones:byExam[k]};});
-  out.evidencias = Object.assign({}, first.evidencias||{}, second.evidencias||{});
+  ['nombre','cargo','identificacion','correo','tipo_examen','lugar','fecha','observaciones','remisiones'].forEach(function(k){
+    if (Object.prototype.hasOwnProperty.call(second, k)) out[k] = second[k];
+  });
+  ['examenes_realizados','recomendaciones_medicas','vigilancia_programa','recomendaciones_por_examen'].forEach(function(k){
+    if (Array.isArray(second[k])) out[k] = second[k];
+  });
+  if (second.evidencias && typeof second.evidencias === 'object') out.evidencias = second.evidencias;
   return out;
 }
 
@@ -388,10 +387,47 @@ function geminiAnalyze_(user, payload) {
   const pdfBase64 = String(payload.pdfBase64 || '');
   if (!pdfBase64) throw new Error('No se recibió el PDF para validación visual.');
   const localData = payload.localData || {};
-  const text = String(payload.text || '').slice(0,30000);
+  const text = String(payload.text || '').slice(0,50000);
   const preferred = String(payload.model || props.getProperty('GEMINI_MODEL') || DEFAULT_GEMINI_MODEL).replace(/^models\//,'').trim();
   const models = [preferred, DEFAULT_GEMINI_MODEL, 'gemini-3.1-flash-lite'].filter(function(v,i,a){ return v && a.indexOf(v) === i; });
-  const prompt = `Actúas como auditor documental de certificados de salud ocupacional. Tu función es EXTRAER, nunca interpretar clínicamente.\n\nLee visualmente TODAS las páginas, tablas, columnas, casillas y notas del PDF aunque el diseño cambie entre proveedores. No dependas de posiciones fijas. Primero identifica las secciones por su significado y después extrae.\n\nREGLAS DE FRONTERA ESTRICTAS:\n1. RECOMENDACIONES POR EXAMEN: asocia una recomendación a un examen solo si la tabla, encabezado, fila, columna o proximidad visual lo relaciona explícitamente. No asignes por encontrar palabras como ruido, gafas, espalda o respiratorio. Si es una recomendación general, déjala como general. Incluye cada examen realizado aunque tenga lista vacía.\n2. REMISIONES: extrae únicamente lo que el documento marque como remisión, interconsulta o remitir. No conviertas controles, recomendaciones o exámenes futuros en remisiones. Si dice no requiere/no aplica/sin remisiones, devuelve "No".\n3. VIGILANCIA EPIDEMIOLÓGICA: registra un programa solo cuando el documento indique ingreso, inclusión, continuidad o pertenencia al PVE/SVE/programa. NO infieras ingreso solo porque exista una recomendación auditiva, visual, osteomuscular, respiratoria o cardiovascular. Si explícitamente no ingresa/no aplica, devuelve lista vacía.\n4. OBSERVACIONES: extrae solo el contenido de observaciones/comentarios. Si un bloque se llama "otras observaciones y recomendaciones", separa las frases de acción (usar, realizar, mantener, evitar, asistir, control) como recomendaciones y deja como observación lo descriptivo.\n5. No mezcles consentimientos, firmas, habeas data, encabezados, diagnósticos ajenos ni texto legal.\n6. No inventes, no resumas y no parafrasees. Une saltos de línea que pertenecen a la misma frase. Corrige solo espacios, tildes y OCR evidente.\n7. En evidencias devuelve fragmentos BREVES y literales del PDF que sustenten recomendaciones, observaciones, remisiones y vigilancia. Si no existe evidencia, deja vacío.\n8. Antes de responder, haz una revisión completa desde la primera hasta la última página.\n\nExtracción del motor local (solo referencia, puede equivocarse):\n${JSON.stringify(localData)}\n\nTexto extraído localmente (solo apoyo; prioriza la lectura visual del PDF):\n${text}`;
+  const prompt = `Eres un AUDITOR DOCUMENTAL especializado en conceptos médicos ocupacionales colombianos. Tu tarea es EXTRAER lo que está escrito o marcado visualmente en el PDF; nunca completar por conocimiento clínico ni inferir datos que el documento no indique.
+
+MÉTODO OBLIGATORIO:
+A. Recorre visualmente cada página completa.
+B. Identifica primero si cada bloque es tabla por filas, tabla por columnas, etiqueta/valor, casillas/checks o texto corrido.
+C. Conserva las relaciones espaciales. Que una recomendación mencione «optometría» no significa que pertenezca a Optometría.
+D. Usa el motor local y el texto reconstruido solo como apoyo; el PDF visual es la fuente de verdad.
+E. Haz una segunda comprobación de recomendaciones, observaciones, PVE/SVE y remisiones antes de responder.
+
+FORMATO TIPO A — MATRIZ + TRES COLUMNAS DE RECOMENDACIONES:
+- Puede decir «El concepto de Aptitud se definió a partir de los siguientes exámenes practicados» y listar exámenes en dos columnas con chulos/checks.
+- Después puede tener «RECOMENDACIONES MÉDICAS», «RECOMENDACIONES OCUPACIONALES» y «HÁBITOS Y ESTILO DE VIDA SALUDABLES».
+- Todo lo de esas tres columnas es recomendación GENERAL, salvo relación explícita con examen.
+- NO asocies «SVE VISUAL: ... CONTROL ANUAL POR OPTOMETRÍA» a Optometría solo por contener OPTOMETRÍA. Sí puede sustentar vigilancia visual porque dice SVE VISUAL.
+- No descartes indicaciones cortas: «USO DE EPP», «CONTROL DE PESO», «HACER DEPORTE», «DIETA BALANCEADA», «HÁBITOS SALUDABLES».
+
+FORMATO TIPO B — EXAMEN IZQUIERDA / RECOMENDACIÓN DERECHA:
+- Puede decir «EXÁMENES DE DIAGNÓSTICO LABORAL REALIZADOS - RECOMENDACIONES».
+- La celda izquierda es examen; la derecha es su recomendación.
+- «OPTOMETRÍA | controles preventivos...» => recomendación de Optometría.
+- «GLICEMIA | REALIZADO» => Glicemia sí es examen realizado, pero «REALIZADO» NO es recomendación.
+
+REGLAS ESTRICTAS:
+1. RECOMENDACIONES POR EXAMEN: relaciona solo por misma fila/celda, encabezado inequívoco o prefijo «Examen: recomendación». Nunca por palabras internas.
+2. RECOMENDACIONES GENERALES: conserva recomendaciones médicas, ocupacionales y hábitos sin examen explícito. No resumas ni elimines recomendaciones cortas.
+3. OBSERVACIONES: si existe el campo exacto «Observaciones: ...», conserva TODO su contenido como observación aunque diga «CONTROL DE PESO», «VALORACIÓN POR NUTRICIÓN», «PAUTAS ERGONÓMICAS» o «USO DE CORRECCIÓN ÓPTICA». Solo en «OTRAS OBSERVACIONES Y RECOMENDACIONES» separa observaciones descriptivas de recomendaciones.
+4. REMISIONES: dentro de «Información de Remisiones» / «Remisiones», cada destino listado (ej. «NUTRICIÓN», «MEDICINA GENERAL EPS») ES remisión aunque no repita «remitir». Fuera de esa sección exige «se remite», «remisión a», «remitir a» o «interconsulta». Si dice No/No aplica/Sin remisiones, devuelve «No».
+5. VIGILANCIA: dentro del bloque «Ingresar al Programa de Vigilancia Epidemiológica...» una fila «VISUAL | SVE» significa vigilancia visual. Una mención «SVE VISUAL: ...» también es evidencia. No infieras PVE/SVE solo por temática si no aparece PVE/SVE/programa o no está en el bloque dedicado.
+6. EXÁMENES: conserva todos los listados/marcados como realizados. No conviertas «examen visual de control en un año» en examen realizado.
+7. No mezcles restricciones, concepto de aptitud, consentimiento, firmas, diagnósticos o texto legal.
+8. No inventes, no resumas, no parafrasees. Corrige solo espacios/tildes/OCR evidente.
+9. EVIDENCIAS: devuelve fragmentos breves y literales del PDF para recomendaciones, observaciones, remisiones y vigilancia. Si no hay evidencia, no agregues el dato.
+
+Motor local a auditar:
+${JSON.stringify(localData)}
+
+Texto reconstruido por geometría. Las tabulaciones representan separaciones físicas de columnas:
+${text}`;
   let lastError = '';
   for (let i=0;i<models.length;i++) {
     const model = models[i];
@@ -399,7 +435,25 @@ function geminiAnalyze_(user, payload) {
       let first = geminiRequest_(apiKey, model, pdfBase64, prompt);
       let data = first;
       try {
-        const auditPrompt = `AUDITORÍA FINAL. Vuelve a leer visualmente el PDF completo y verifica especialmente cuatro zonas que suelen cambiar de formato: (a) recomendaciones asociadas a cada examen, (b) remisiones, (c) ingreso/continuidad en programas de vigilancia epidemiológica y (d) observaciones.\n\nPrimera extracción:\n${JSON.stringify(first)}\n\nMotor local:\n${JSON.stringify(localData)}\n\nCorrige omisiones y asociaciones equivocadas. No deduzcas PVE a partir de una recomendación, no confundas controles con remisiones y no pongas observaciones dentro de recomendaciones. Devuelve nuevamente el JSON completo con evidencias breves literales.`;
+        const auditPrompt = `AUDITORÍA FINAL ADVERSARIAL. Relee el PDF completo sin asumir que la primera extracción es correcta.
+
+Verifica obligatoriamente:
+- Tabla examen/recomendación: relación por FILA, no por palabras internas.
+- Tres columnas médicas/ocupacionales/hábitos: conservar como generales salvo asociación explícita.
+- «REALIZADO» es estado, no recomendación.
+- «Observaciones:» conserva todo el campo.
+- En «Información de Remisiones», NUTRICIÓN o MEDICINA GENERAL EPS son remisiones.
+- En «Ingresar al Programa de Vigilancia...», «VISUAL | SVE» es vigilancia visual.
+- Fuera de PVE/SVE no infieras programa por temática.
+- No conviertas «control por ...» dentro de Observaciones en remisión.
+
+Primera extracción (puede contener falsos positivos y puedes eliminarlos):
+${JSON.stringify(first)}
+
+Motor local (también puede equivocarse):
+${JSON.stringify(localData)}
+
+Devuelve el JSON COMPLETO corregido. Si algo no tiene evidencia visual, elimínalo. Incluye evidencias literales breves.`;
         const second = geminiRequest_(apiKey, model, pdfBase64, auditPrompt);
         data = mergeGeminiAudits_(first, second);
         data._segunda_revision_ia = true;
