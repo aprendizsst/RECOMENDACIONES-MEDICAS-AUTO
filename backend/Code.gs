@@ -348,10 +348,19 @@ function extractGeminiJson_(bodyText) {
 }
 
 function geminiRequest_(apiKey, model, pdfBase64, prompt) {
-  const response = UrlFetchApp.fetch(GEMINI_INTERACTIONS_URL, {
-    method:'post', contentType:'application/json', muteHttpExceptions:true,
-    headers:{'x-goog-api-key':apiKey,'Api-Revision':'2026-05-20'}, payload:JSON.stringify(geminiPayload_(pdfBase64,prompt,model))
-  });
+  let response;
+  try {
+    response = UrlFetchApp.fetch(GEMINI_INTERACTIONS_URL, {
+      method:'post', contentType:'application/json', muteHttpExceptions:true,
+      headers:{'x-goog-api-key':apiKey,'Api-Revision':'2026-05-20'}, payload:JSON.stringify(geminiPayload_(pdfBase64,prompt,model))
+    });
+  } catch (error) {
+    const msg = error && error.message ? error.message : String(error);
+    if (/script\.external_request|UrlFetchApp|permiso|permission|authorization/i.test(msg)) {
+      throw new Error('Gemini no está autorizado en Apps Script. Ejecuta manualmente authorizePortalServices(), concede todos los permisos y vuelve a publicar una nueva versión de la Web App. Detalle: ' + msg);
+    }
+    throw error;
+  }
   const status = response.getResponseCode();
   if (status < 200 || status >= 300) {
     const detail = response.getContentText().slice(0,800);
@@ -690,10 +699,43 @@ function cleanEmailList_(value) {
 function validEmail_(value) { return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(value || '').trim()); }
 
 function authorizePortalServices() {
+  // Ejecutar manualmente una vez desde el editor de Apps Script.
+  // Esto fuerza la autorización de TODOS los servicios usados por la Web App,
+  // incluido UrlFetchApp, necesario para llamar a Gemini.
+  const requiredScopes = [
+    'https://www.googleapis.com/auth/script.external_request',
+    'https://www.googleapis.com/auth/script.send_mail',
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/drive'
+  ];
+
+  try {
+    ScriptApp.requireScopes(ScriptApp.AuthMode.FULL, requiredScopes);
+  } catch (_) {
+    // Si requireScopes no abre el flujo en este contexto, las llamadas
+    // siguientes igualmente fuerzan a Apps Script a solicitar autorización.
+  }
+
+  // UrlFetchApp: permiso requerido para Gemini. La URL devuelve 204 y no
+  // transmite información del portal.
+  const fetchProbe = UrlFetchApp.fetch('https://www.google.com/generate_204', {
+    method: 'get',
+    muteHttpExceptions: true,
+    followRedirects: true
+  });
+
+  // Correo, Sheets y Drive.
   const quota = MailApp.getRemainingDailyQuota();
   const db = getDb_();
   DriveApp.getRootFolder().getName();
-  return { authorized:true, mailQuota:quota, database:db.getName() };
+
+  return {
+    authorized: true,
+    externalRequest: fetchProbe.getResponseCode() >= 200 && fetchProbe.getResponseCode() < 400,
+    mailQuota: quota,
+    database: db.getName(),
+    message: 'Permisos de Gemini, correo, Sheets y Drive autorizados.'
+  };
 }
 
 function mailStatus_(user) {

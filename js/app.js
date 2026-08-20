@@ -47,7 +47,7 @@
       $('settingsBackendUrl').value = backendUrl || '';
       $('emailSubject').value = await SSTDB.getSetting('emailSubject', APP_CONFIG.emailSubject);
       $('emailBody').value = await SSTDB.getSetting('emailBody', APP_CONFIG.emailBody);
-      $('toggleAi').checked = await SSTDB.getSetting('aiEnabled', true);
+      $('toggleAi').checked = true; $('toggleAi').disabled = true; await SSTDB.setSetting('aiEnabled', true);
       $('toggleOcr').checked = await SSTDB.getSetting('ocrEnabled', true);
       $('settingsOutputFormat').value = await SSTDB.getSetting('outputFormat', 'PDF');
       $('settingsGeminiModel').value = await SSTDB.getSetting('geminiModel', APP_CONFIG.defaultGeminiModel);
@@ -130,6 +130,71 @@
     if (!state.selectedOutputId && state.outputs[0]) state.selectedOutputId = state.outputs[0].id;
     await renderAll();
     await renderAssetSettings();
+    if (state.backendOnline && !state.localMode && state.documents.length) {
+      setTimeout(() => { autoAuditPendingDocuments().catch((error) => console.warn('Auditoría IA automática:', error)); }, 350);
+    }
+  }
+
+  function needsAutomaticAiAudit(doc) {
+    if (!doc || !state.backendOnline || state.localMode) return false;
+    if ((doc.size || doc.blob?.size || 0) > APP_CONFIG.maxGeminiPdfMb * 1024 * 1024) return false;
+    return doc.aiValidationVersion !== APP_CONFIG.aiValidationVersion || doc.aiValidationStatus !== 'validated' || !doc.aiValidatedAt;
+  }
+
+  async function runAutomaticAiAudit(doc, options = {}) {
+    if (!doc?.blob || !needsAutomaticAiAudit(doc)) return doc;
+    const buffer = options.buffer || await doc.blob.arrayBuffer();
+    const sourceText = options.sourceText || doc.text || '';
+    const label = options.label || doc.fileName || 'certificado.pdf';
+    const ratio = options.ratio ?? .82;
+    updateProcessing(options.title || 'Validación IA automática', `${label} · auditoría visual completa`, ratio);
+    try {
+      const aiData = await SSTBackend.call('geminiAnalyze', {
+        fileName: doc.fileName,
+        pdfBase64: SSTUtils.arrayBufferToBase64(buffer),
+        text: sourceText.slice(0,50000),
+        localData: doc.data,
+        model: await SSTDB.getSetting('geminiModel', APP_CONFIG.defaultGeminiModel)
+      }, { timeout:195000 });
+      doc.data = await SSTParser.fuse(doc.data, aiData, sourceText);
+      doc.aiError = '';
+      doc.aiValidationStatus = 'validated';
+      doc.aiValidationVersion = APP_CONFIG.aiValidationVersion;
+      doc.aiValidatedAt = new Date().toISOString();
+      doc.updatedAt = doc.aiValidatedAt;
+      await SSTDB.put(SSTDB.stores.documents, doc);
+      return doc;
+    } catch (error) {
+      doc.aiError = error.message;
+      doc.aiValidationStatus = 'error';
+      doc.aiValidationVersion = APP_CONFIG.aiValidationVersion;
+      doc.aiLastAttemptAt = new Date().toISOString();
+      doc.updatedAt = doc.aiLastAttemptAt;
+      if (doc.data) doc.data.modo_validacion = 'Respaldo local · IA pendiente';
+      await SSTDB.put(SSTDB.stores.documents, doc);
+      throw error;
+    }
+  }
+
+  async function autoAuditPendingDocuments() {
+    if (!state.backendOnline || state.localMode) return;
+    const pending = state.documents.filter(needsAutomaticAiAudit);
+    if (!pending.length) return;
+    $('processingBanner').classList.remove('hidden');
+    let ok = 0, failed = 0;
+    try {
+      for (let i=0; i<pending.length; i++) {
+        const doc = pending[i];
+        try {
+          await runAutomaticAiAudit(doc, { title:`IA automática ${i+1} de ${pending.length}`, ratio:(i+.7)/pending.length });
+          ok++;
+        } catch (error) { failed++; console.warn(`IA automática ${doc.fileName}:`, error); }
+      }
+      await renderAll();
+      if (ok) toast('Validación IA automática', `${ok} certificado(s) auditado(s)${failed ? ` · ${failed} pendiente(s)` : ''}.`, failed ? 'warn' : 'success', 6500);
+    } finally {
+      setTimeout(() => $('processingBanner').classList.add('hidden'), 500);
+    }
   }
 
   async function refreshBackendDiagnostics() {
@@ -315,7 +380,7 @@
     try {
       if (!state.parserReady) await SSTParser.init((msg,p) => updateProcessing('Preparando motor clínico', msg, p*0.15));
       state.parserReady = true;
-      const aiEnabled = await SSTDB.getSetting('aiEnabled', true);
+      const aiEnabled = true;
       const ocrEnabled = await SSTDB.getSetting('ocrEnabled', true);
       for (let index=0; index<files.length; index++) {
         const file = files[index];
@@ -325,7 +390,17 @@
         const cacheVigente = cached && cached.pipelineVersion === APP_CONFIG.pipelineVersion && !options.force;
         if (cacheVigente) {
           if (!state.documents.some((d) => d.id === cached.id)) state.documents.unshift(cached);
-          state.selectedDocId = cached.id; updateProcessing(`Reutilizando ${index+1} de ${files.length}`, `${file.name} ya estaba procesado con el motor actual`, (index+1)/files.length); continue;
+          state.selectedDocId = cached.id;
+          state.selectedOriginalId = cached.id;
+          if (aiEnabled && needsAutomaticAiAudit(cached)) {
+            updateProcessing(`Validando caché con IA ${index+1} de ${files.length}`, `${file.name} · faltaba auditoría IA vigente`, (index+.72)/files.length);
+            try {
+              await runAutomaticAiAudit(cached, { buffer, sourceText:cached.text || '', title:`Validando con IA ${index+1} de ${files.length}`, ratio:(index+.86)/files.length });
+            } catch (error) { console.warn('Gemini automático en caché:', error); }
+          } else {
+            updateProcessing(`Reutilizando ${index+1} de ${files.length}`, `${file.name} ya estaba procesado y validado`, (index+1)/files.length);
+          }
+          continue;
         }
         const staleId = cached?.id || null;
         if (staleId) {
@@ -366,10 +441,11 @@
             updateProcessing(`Validando con IA ${index+1} de ${files.length}`, `${file.name} · lectura visual completa`, (index+.82)/files.length);
             const aiData = await SSTBackend.call('geminiAnalyze', { fileName:file.name, pdfBase64:SSTUtils.arrayBufferToBase64(buffer), text:extraction.text.slice(0,50000), localData:data, model:await SSTDB.getSetting('geminiModel', APP_CONFIG.defaultGeminiModel) }, { timeout: 195000 });
             data = await SSTParser.fuse(data, aiData, extraction.text);
-          } catch (error) { aiError = error.message; console.warn('Gemini:', error); data.modo_validacion = 'Respaldo local · IA no disponible'; }
+          } catch (error) { aiError = error.message; console.warn('Gemini:', error); data.modo_validacion = 'Respaldo local · IA pendiente'; }
         } else if (aiEnabled && file.size > APP_CONFIG.maxGeminiPdfMb*1024*1024) aiError = `PDF mayor a ${APP_CONFIG.maxGeminiPdfMb} MB; se usó análisis local.`;
         const now = new Date().toISOString();
-        const row = { id:staleId || crypto.randomUUID(), hash, fileName:file.name, size:file.size, type:'application/pdf', blob, text:extraction.text, pageCount:extraction.pageCount, usedOcr:extraction.usedOcr, aiError, data, pipelineVersion:APP_CONFIG.pipelineVersion, dirty:false, createdAt:cached?.createdAt || now, updatedAt:now };
+        const aiWasValidated = !aiError && aiEnabled && state.backendOnline && !state.localMode && file.size <= APP_CONFIG.maxGeminiPdfMb*1024*1024;
+        const row = { id:staleId || crypto.randomUUID(), hash, fileName:file.name, size:file.size, type:'application/pdf', blob, text:extraction.text, pageCount:extraction.pageCount, usedOcr:extraction.usedOcr, aiError, data, pipelineVersion:APP_CONFIG.pipelineVersion, aiValidationStatus: aiWasValidated ? 'validated' : (file.size > APP_CONFIG.maxGeminiPdfMb*1024*1024 ? 'skipped_size' : (aiError ? 'error' : 'pending')), aiValidationVersion: aiWasValidated ? APP_CONFIG.aiValidationVersion : '', aiValidatedAt: aiWasValidated ? now : '', aiLastAttemptAt: aiError ? now : '', dirty:false, createdAt:cached?.createdAt || now, updatedAt:now };
         await SSTDB.put(SSTDB.stores.documents, row);
         const oldIndex = state.documents.findIndex((d) => d.id === row.id);
         if (oldIndex >= 0) state.documents.splice(oldIndex,1);
@@ -444,8 +520,11 @@
       }, { timeout:195000 });
       doc.data = await SSTParser.fuse(doc.data, aiData, sourceText);
       doc.aiError = '';
+      doc.aiValidationStatus = 'validated';
+      doc.aiValidationVersion = APP_CONFIG.aiValidationVersion;
+      doc.aiValidatedAt = new Date().toISOString();
       doc.pipelineVersion = APP_CONFIG.pipelineVersion;
-      doc.updatedAt = new Date().toISOString();
+      doc.updatedAt = doc.aiValidatedAt;
       doc.dirty = state.outputs.some((o) => o.id === doc.id || o.documentId === doc.id);
       await SSTDB.put(SSTDB.stores.documents, doc);
       updateProcessing('Auditoría completada', `${doc.data?.modo_validacion || 'IA + motor clínico'} · calidad ${doc.data?.calidad_extraccion || '—'}`, 1);
@@ -453,7 +532,10 @@
       toast('Validación IA completada', `${doc.data?.nombre || doc.fileName} · ${(doc.data?.campos_revision || []).length ? 'quedan campos por revisar' : 'sin alertas estructurales'}.`, (doc.data?.campos_revision || []).length ? 'warn' : 'success', 7500);
     } catch (error) {
       doc.aiError = error.message;
-      doc.updatedAt = new Date().toISOString();
+      doc.aiValidationStatus = 'error';
+      doc.aiValidationVersion = APP_CONFIG.aiValidationVersion;
+      doc.aiLastAttemptAt = new Date().toISOString();
+      doc.updatedAt = doc.aiLastAttemptAt;
       await SSTDB.put(SSTDB.stores.documents, doc);
       renderDocumentList(); renderEditor();
       toast('La IA no pudo validar', error.message, 'error', 9000);
@@ -610,7 +692,7 @@
 
   async function saveAiSettings() {
     const model=$('settingsGeminiModel').value.trim()||APP_CONFIG.defaultGeminiModel; const key=$('settingsGeminiKey').value.trim();
-    await SSTDB.setSetting('aiEnabled',$('toggleAi').checked); await SSTDB.setSetting('geminiModel',model);
+    await SSTDB.setSetting('aiEnabled',true); $('toggleAi').checked = true; $('toggleAi').disabled = true; await SSTDB.setSetting('geminiModel',model);
     if (!state.backendOnline||state.localMode) return toast('Preferencia local guardada','Conecta Apps Script para guardar la API key.','warn');
     try { await SSTBackend.call('saveAiConfig',{model,apiKey:key}); $('settingsGeminiKey').value=''; toast('IA configurada','La clave quedó guardada en Script Properties, fuera de GitHub Pages.','success'); }
     catch(error){toast('No se pudo guardar la IA',error.message,'error');}

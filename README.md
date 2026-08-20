@@ -1,3 +1,8 @@
+
+## V6.2 · IA automática
+
+La auditoría con Gemini se ejecuta automáticamente al cargar cada PDF. Los documentos en caché sin una auditoría vigente también se revalidan al abrir el portal. El botón manual queda solo como opción de reauditoría puntual.
+
 # Portal SST · Recomendaciones Médicas — GitHub Pages
 
 Migración del proyecto original **Streamlit/Python** a una aplicación web estática compatible con **GitHub Pages**, manteniendo el flujo funcional principal y eliminando la dependencia de Streamlit/LibreOffice en la interfaz.
