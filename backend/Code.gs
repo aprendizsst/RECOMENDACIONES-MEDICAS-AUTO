@@ -16,6 +16,50 @@ function doGet(e) {
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
+function doPost(e) {
+  let envelope;
+  try {
+    const raw = String((e && e.parameter && e.parameter.request) || '');
+    if (!raw) throw new Error('No se recibió la solicitud.');
+    const req = JSON.parse(raw);
+    const result = apiDispatch(req);
+    envelope = {
+      channel: 'sst-backend-http',
+      id: String(req.id || ''),
+      nonce: String(req.nonce || ''),
+      ok: true,
+      data: result
+    };
+  } catch (error) {
+    let req = {};
+    try { req = JSON.parse(String((e && e.parameter && e.parameter.request) || '{}')); } catch (_) {}
+    envelope = {
+      channel: 'sst-backend-http',
+      id: String(req.id || ''),
+      nonce: String(req.nonce || ''),
+      ok: false,
+      error: error && error.message ? error.message : String(error)
+    };
+  }
+
+  const json = JSON.stringify(envelope)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+
+  const html = '<!doctype html><html><head><meta charset="UTF-8"></head><body>' +
+    '<script>(function(){var message=' + json + ';' +
+    'try{window.top.postMessage(message,"*");}' +
+    'catch(e){try{window.parent.postMessage(message,"*");}catch(_){}}' +
+    '})();<\\/script></body></html>';
+
+  return HtmlService.createHtmlOutput(html)
+    .setTitle('Portal SST · Respuesta segura')
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
 function apiDispatch(requestJson) {
   try {
     const req = typeof requestJson === 'string' ? JSON.parse(requestJson) : requestJson;
