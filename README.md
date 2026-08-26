@@ -1,7 +1,13 @@
-# Portal SST · Recomendaciones Médicas V8
+# Portal SST · Recomendaciones Médicas V9
 
-Aplicación GitHub Pages para procesamiento de conceptos médicos ocupacionales con reconstrucción de tablas PDF/OCR, parser clínico local en Pyodide, auditoría automática con Gemini mediante Google Apps Script, generación desde plantilla DOCX institucional, consecutivos en Google Sheets y envío de correo.
+Aplicación GitHub Pages + Google Apps Script para extracción y validación de conceptos médicos ocupacionales, generación documental corporativa, consecutivos compartidos y envío de correo.
 
-La V8 corrige específicamente la pérdida de recomendaciones por examen en tablas de dos columnas, fortalece Observaciones/PVE/SVE/Remisiones, aísla errores de carga por PDF y corrige el editor que en V7 podía mostrar recomendaciones vacías aunque el parser las hubiera extraído.
+## V9
 
-Ver `UPGRADE_V8.md` y `PATCH_V8.md`.
+- Recomendaciones clínicas en un único párrafo continuo.
+- Exámenes con recomendación en negrita.
+- Omisión automática de bloques clínicos vacíos.
+- Deduplicación y asociación IA más estricta.
+- Consecutivos de Google Sheets compatibles con formatos como `42.613`.
+- Reserva de consecutivos por lote para evitar timeouts.
+- Plantilla DOCX institucional como fuente de Word, PDF y vista previa.

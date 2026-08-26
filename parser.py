@@ -1406,6 +1406,45 @@ def extraer_identificacion_correo(texto):
     return resultado
 
 
+def deduplicar_mapa_recomendaciones_global(mapa):
+    """Evita que la misma recomendación aparezca bajo varios exámenes.
+    Prioriza asociaciones específicas y deja las generales al final.
+    """
+    if not isinstance(mapa, dict):
+        return mapa or {}
+    salida = {}
+    vistos = set()
+    items = list(mapa.items())
+    items.sort(key=lambda kv: 1 if normalizar_etiqueta(kv[0]) == "RECOMENDACIONES GENERALES" else 0)
+    for examen, recs in items:
+        limpias = []
+        for rec in recs or []:
+            firma = normalizar_etiqueta(rec)
+            if not firma or firma in vistos or firma in {"REALIZADO", "REALIZADA", "NORMAL", "NO APLICA", "N A"}:
+                continue
+            vistos.add(firma)
+            limpias.append(rec)
+        if limpias:
+            salida[examen] = limpias
+        elif normalizar_etiqueta(examen) != "RECOMENDACIONES GENERALES":
+            salida.setdefault(examen, [])
+    return salida
+
+
+def _evidencia_vincula_examen(examen, recomendacion, evidencias):
+    exn = normalizar_etiqueta(examen)
+    tokens = [t for t in exn.split() if len(t) >= 5 and t not in {"EXAMEN", "MEDICO", "CLINICO", "ENFASIS"}]
+    if not tokens:
+        tokens = [t for t in exn.split() if len(t) >= 4]
+    for evidencia in evidencias or []:
+        evn = normalizar_etiqueta(evidencia)
+        if not any(t in evn for t in tokens):
+            continue
+        if texto_soportado_por_fuente(recomendacion, evidencia, 0.30) or texto_soportado_por_fuente(evidencia, recomendacion, 0.30):
+            return True
+    return False
+
+
 def fusionar_validacion_ia(datos_locales, datos_ia, texto_fuente):
     """Fusión conservadora: IA visual + reglas locales + evidencia del documento."""
     resultado = dict(datos_locales or {})
@@ -1458,8 +1497,12 @@ def fusionar_validacion_ia(datos_locales, datos_ia, texto_fuente):
             firma = normalizar_etiqueta(rec)
             if firma in ubicacion_local and canonizar_nombre_examen(ex, resultado["examenes_lista"]) != ubicacion_local[firma]:
                 continue
-            if firma not in ubicacion_local and not (texto_soportado_por_fuente(rec, fuente_recomendaciones, 0.40) or evidencia_relacionada(rec)):
-                continue
+            if firma not in ubicacion_local:
+                # La IA no puede crear una asociación examen→recomendación solo porque
+                # ambas palabras existan en el PDF. Debe aportar evidencia de la MISMA
+                # fila/bloque que vincule explícitamente el examen y la recomendación.
+                if not _evidencia_vincula_examen(ex, rec, evidencia_recs):
+                    continue
             validas.append(rec); firmas_ia_mapeadas.add(firma)
         mapa_ia_filtrado.append({"examen": ex, "recomendaciones": validas})
     recs_ia_sueltos = [
@@ -1471,6 +1514,7 @@ def fusionar_validacion_ia(datos_locales, datos_ia, texto_fuente):
     mapa_fusion = agrupar_recomendaciones_por_examen(resultado["examenes_lista"], recs_ia_sueltos, [
         {"examen": k, "recomendaciones": v} for k, v in mapa_local.items()
     ] + mapa_ia_filtrado)
+    mapa_fusion = deduplicar_mapa_recomendaciones_global(mapa_fusion)
     resultado["recomendaciones_por_examen"] = mapa_fusion
     resultado["recomendaciones_lista"] = aplanar_recomendaciones_por_examen(mapa_fusion)
 
@@ -2363,6 +2407,45 @@ def analizar_pdf_inteligente(texto, metadatos_pdf=None):
     return datos
 
 
+def deduplicar_mapa_recomendaciones_global(mapa):
+    """Evita que la misma recomendación aparezca bajo varios exámenes.
+    Prioriza asociaciones específicas y deja las generales al final.
+    """
+    if not isinstance(mapa, dict):
+        return mapa or {}
+    salida = {}
+    vistos = set()
+    items = list(mapa.items())
+    items.sort(key=lambda kv: 1 if normalizar_etiqueta(kv[0]) == "RECOMENDACIONES GENERALES" else 0)
+    for examen, recs in items:
+        limpias = []
+        for rec in recs or []:
+            firma = normalizar_etiqueta(rec)
+            if not firma or firma in vistos or firma in {"REALIZADO", "REALIZADA", "NORMAL", "NO APLICA", "N A"}:
+                continue
+            vistos.add(firma)
+            limpias.append(rec)
+        if limpias:
+            salida[examen] = limpias
+        elif normalizar_etiqueta(examen) != "RECOMENDACIONES GENERALES":
+            salida.setdefault(examen, [])
+    return salida
+
+
+def _evidencia_vincula_examen(examen, recomendacion, evidencias):
+    exn = normalizar_etiqueta(examen)
+    tokens = [t for t in exn.split() if len(t) >= 5 and t not in {"EXAMEN", "MEDICO", "CLINICO", "ENFASIS"}]
+    if not tokens:
+        tokens = [t for t in exn.split() if len(t) >= 4]
+    for evidencia in evidencias or []:
+        evn = normalizar_etiqueta(evidencia)
+        if not any(t in evn for t in tokens):
+            continue
+        if texto_soportado_por_fuente(recomendacion, evidencia, 0.30) or texto_soportado_por_fuente(evidencia, recomendacion, 0.30):
+            return True
+    return False
+
+
 def fusionar_validacion_ia(datos_locales, datos_ia, texto_fuente):
     # La fusión V6 sigue siendo la barrera contra alucinaciones. V7 añade luego un
     # enrutamiento semántico conservador sobre recomendaciones generales verificadas.
@@ -2679,6 +2762,45 @@ def _postprocess_critical_fields_v8(datos, texto):
 def analizar_pdf_inteligente(texto, metadatos_pdf=None):
     datos = _ANALIZAR_PDF_V7(texto, metadatos_pdf)
     return _postprocess_critical_fields_v8(datos, texto)
+
+
+def deduplicar_mapa_recomendaciones_global(mapa):
+    """Evita que la misma recomendación aparezca bajo varios exámenes.
+    Prioriza asociaciones específicas y deja las generales al final.
+    """
+    if not isinstance(mapa, dict):
+        return mapa or {}
+    salida = {}
+    vistos = set()
+    items = list(mapa.items())
+    items.sort(key=lambda kv: 1 if normalizar_etiqueta(kv[0]) == "RECOMENDACIONES GENERALES" else 0)
+    for examen, recs in items:
+        limpias = []
+        for rec in recs or []:
+            firma = normalizar_etiqueta(rec)
+            if not firma or firma in vistos or firma in {"REALIZADO", "REALIZADA", "NORMAL", "NO APLICA", "N A"}:
+                continue
+            vistos.add(firma)
+            limpias.append(rec)
+        if limpias:
+            salida[examen] = limpias
+        elif normalizar_etiqueta(examen) != "RECOMENDACIONES GENERALES":
+            salida.setdefault(examen, [])
+    return salida
+
+
+def _evidencia_vincula_examen(examen, recomendacion, evidencias):
+    exn = normalizar_etiqueta(examen)
+    tokens = [t for t in exn.split() if len(t) >= 5 and t not in {"EXAMEN", "MEDICO", "CLINICO", "ENFASIS"}]
+    if not tokens:
+        tokens = [t for t in exn.split() if len(t) >= 4]
+    for evidencia in evidencias or []:
+        evn = normalizar_etiqueta(evidencia)
+        if not any(t in evn for t in tokens):
+            continue
+        if texto_soportado_por_fuente(recomendacion, evidencia, 0.30) or texto_soportado_por_fuente(evidencia, recomendacion, 0.30):
+            return True
+    return False
 
 
 def fusionar_validacion_ia(datos_locales, datos_ia, texto_fuente):

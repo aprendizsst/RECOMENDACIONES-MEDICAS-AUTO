@@ -1,9 +1,7 @@
-Portal SST V8 build checks
-- Parser Python: compilación OK
-- Regresiones formato A/B: OK
-- Regresión V8 fila sin columnas: OK
-- JavaScript: validación sintáctica OK
-- Apps Script: validación sintáctica OK
-- JSON manifests: OK
-- Referencias locales del index: OK
-- DOCX base: archivo ZIP/OOXML válido
+V9 checks
+- parser.py: py_compile OK
+- parser regression: OK
+- JS syntax app/config/docx/generator/backend/pdf/db/utils/parser-bridge: OK
+- Code.gs syntax: OK via node copy
+- consecutive parser: 42.613 -> 42613; next -> 42.614
+- recommendation global dedupe: OK
