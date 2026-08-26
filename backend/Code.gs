@@ -1,6 +1,6 @@
 const APP_NAME = 'Portal SST · Recomendaciones Médicas';
-const GEMINI_INTERACTIONS_URL = 'https://generativelanguage.googleapis.com/v1beta/interactions';
-const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash';
+const GEMINI_GENERATE_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models/';
+const DEFAULT_GEMINI_MODEL = 'gemini-3.7-flash';
 const SESSION_HOURS = 8;
 const USER_SHEET = 'Usuarios';
 const EMAIL_SHEET = 'HistorialCorreos';
@@ -87,6 +87,7 @@ function apiDispatch(requestJson) {
       case 'getSharedAssetsMeta': return getSharedAssetsMeta_(requireSession_(sessionToken));
       case 'getSharedAsset': return getSharedAsset_(requireSession_(sessionToken), payload);
       case 'geminiAnalyze': return geminiAnalyze_(requireSession_(sessionToken), payload);
+      case 'aiStatus': return aiStatus_(requireSession_(sessionToken));
       case 'nextConsecutive': return nextConsecutive_(requireSession_(sessionToken), payload);
       case 'consecutiveStatus': return consecutiveStatus_(requireSession_(sessionToken));
       case 'saveConsecutiveConfig': return saveConsecutiveConfig_(requireAdmin_(sessionToken), payload);
@@ -323,47 +324,64 @@ function getSharedAsset_(user, payload) {
 }
 
 function geminiSchema_() {
-  return { type:'object', properties:{
-    nombre:{type:'string'}, cargo:{type:'string'}, identificacion:{type:'string'}, correo:{type:'string'}, tipo_examen:{type:'string'}, lugar:{type:'string'}, fecha:{type:'string',description:'AAAA-MM-DD o vacío'},
-    examenes_realizados:{type:'array',items:{type:'string'}}, recomendaciones_medicas:{type:'array',items:{type:'string'}}, recomendaciones_por_examen:{type:'array',items:{type:'object',properties:{examen:{type:'string'},recomendaciones:{type:'array',items:{type:'string'}}},required:['examen','recomendaciones']}},
-    vigilancia_programa:{type:'array',items:{type:'string'}}, observaciones:{type:'string'}, remisiones:{type:'string'},
-    evidencias:{type:'object',properties:{
-      recomendaciones:{type:'array',items:{type:'string'}}, observaciones:{type:'string'}, remisiones:{type:'string'}, vigilancia_programa:{type:'string'}
+  return { type:'OBJECT', properties:{
+    nombre:{type:'STRING'}, cargo:{type:'STRING'}, identificacion:{type:'STRING'}, correo:{type:'STRING'}, tipo_examen:{type:'STRING'}, lugar:{type:'STRING'}, fecha:{type:'STRING',description:'AAAA-MM-DD o vacío'},
+    examenes_realizados:{type:'ARRAY',items:{type:'STRING'}}, recomendaciones_medicas:{type:'ARRAY',items:{type:'STRING'}}, recomendaciones_por_examen:{type:'ARRAY',items:{type:'OBJECT',properties:{examen:{type:'STRING'},recomendaciones:{type:'ARRAY',items:{type:'STRING'}}},required:['examen','recomendaciones']}},
+    vigilancia_programa:{type:'ARRAY',items:{type:'STRING'}}, observaciones:{type:'STRING'}, remisiones:{type:'STRING'},
+    evidencias:{type:'OBJECT',properties:{
+      recomendaciones:{type:'ARRAY',items:{type:'STRING'}}, observaciones:{type:'STRING'}, remisiones:{type:'STRING'}, vigilancia_programa:{type:'STRING'}
     },required:['recomendaciones','observaciones','remisiones','vigilancia_programa']}
   }, required:['nombre','cargo','identificacion','correo','tipo_examen','lugar','fecha','examenes_realizados','recomendaciones_medicas','recomendaciones_por_examen','vigilancia_programa','observaciones','remisiones','evidencias'] };
 }
 
-function geminiPayload_(pdfBase64, prompt, model) {
-  return { model:model, input:[{type:'document',data:pdfBase64,mime_type:'application/pdf'},{type:'text',text:prompt}], response_format:{type:'text',mime_type:'application/json',schema:geminiSchema_()}, generation_config:{temperature:0} };
+function geminiPayload_(pdfBase64, prompt) {
+  return {
+    contents:[{ role:'user', parts:[
+      { inlineData:{ mimeType:'application/pdf', data:pdfBase64 } },
+      { text:prompt }
+    ]}],
+    generationConfig:{
+      responseMimeType:'application/json',
+      responseSchema:geminiSchema_()
+    }
+  };
 }
 
 function extractGeminiJson_(bodyText) {
   const body = JSON.parse(bodyText);
-  let fragments = [];
-  (body.steps || []).forEach(function(step){ if (step.type === 'model_output') (step.content || []).forEach(function(c){ if (c.text) fragments.push(c.text); }); });
-  (body.outputs || []).forEach(function(out){ if (out.text) fragments.push(out.text); });
-  let text = fragments.join('').trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');
-  if (!text) throw new Error('Gemini respondió sin JSON utilizable.');
-  return JSON.parse(text);
+  const parts = (((body.candidates || [])[0] || {}).content || {}).parts || [];
+  let text = parts.map(function(part){ return part && part.text ? part.text : ''; }).join('').trim();
+  text = text.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');
+  if (!text) {
+    const reason = (((body.candidates || [])[0] || {}).finishReason || body.promptFeedback?.blockReason || 'sin contenido');
+    throw new Error('Gemini respondió sin JSON utilizable (' + reason + ').');
+  }
+  try { return JSON.parse(text); }
+  catch (error) { throw new Error('Gemini devolvió JSON inválido: ' + text.slice(0,600)); }
 }
 
 function geminiRequest_(apiKey, model, pdfBase64, prompt) {
+  const cleanModel = String(model || DEFAULT_GEMINI_MODEL).replace(/^models\//,'').trim();
+  const url = GEMINI_GENERATE_BASE_URL + encodeURIComponent(cleanModel) + ':generateContent';
   let response;
   try {
-    response = UrlFetchApp.fetch(GEMINI_INTERACTIONS_URL, {
-      method:'post', contentType:'application/json', muteHttpExceptions:true,
-      headers:{'x-goog-api-key':apiKey,'Api-Revision':'2026-05-20'}, payload:JSON.stringify(geminiPayload_(pdfBase64,prompt,model))
+    response = UrlFetchApp.fetch(url, {
+      method:'post',
+      contentType:'application/json',
+      muteHttpExceptions:true,
+      headers:{'x-goog-api-key':apiKey},
+      payload:JSON.stringify(geminiPayload_(pdfBase64,prompt))
     });
   } catch (error) {
     const msg = error && error.message ? error.message : String(error);
     if (/script\.external_request|UrlFetchApp|permiso|permission|authorization/i.test(msg)) {
-      throw new Error('Gemini no está autorizado en Apps Script. Ejecuta manualmente authorizePortalServices(), concede todos los permisos y vuelve a publicar una nueva versión de la Web App. Detalle: ' + msg);
+      throw new Error('Gemini no está autorizado en Apps Script. Ejecuta manualmente authorizePortalServices() desde el editor, acepta el permiso de solicitudes externas y vuelve a publicar una nueva versión de la Web App. Detalle: ' + msg);
     }
     throw error;
   }
   const status = response.getResponseCode();
   if (status < 200 || status >= 300) {
-    const detail = response.getContentText().slice(0,800);
+    const detail = response.getContentText().slice(0,1200);
     const err = new Error('Gemini HTTP ' + status + ': ' + detail); err.status = status; throw err;
   }
   return extractGeminiJson_(response.getContentText());
@@ -398,7 +416,7 @@ function geminiAnalyze_(user, payload) {
   const localData = payload.localData || {};
   const text = String(payload.text || '').slice(0,50000);
   const preferred = String(payload.model || props.getProperty('GEMINI_MODEL') || DEFAULT_GEMINI_MODEL).replace(/^models\//,'').trim();
-  const models = [preferred, DEFAULT_GEMINI_MODEL, 'gemini-3.1-flash-lite'].filter(function(v,i,a){ return v && a.indexOf(v) === i; });
+  const models = [preferred, DEFAULT_GEMINI_MODEL, 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'].filter(function(v,i,a){ return v && a.indexOf(v) === i; });
   const prompt = `Eres un AUDITOR DOCUMENTAL especializado en conceptos médicos ocupacionales colombianos. Tu tarea es EXTRAER lo que está escrito o marcado visualmente en el PDF; nunca completar por conocimiento clínico ni inferir datos que el documento no indique.
 
 MÉTODO OBLIGATORIO:
@@ -411,19 +429,22 @@ E. Haz una segunda comprobación de recomendaciones, observaciones, PVE/SVE y re
 FORMATO TIPO A — MATRIZ + TRES COLUMNAS DE RECOMENDACIONES:
 - Puede decir «El concepto de Aptitud se definió a partir de los siguientes exámenes practicados» y listar exámenes en dos columnas con chulos/checks.
 - Después puede tener «RECOMENDACIONES MÉDICAS», «RECOMENDACIONES OCUPACIONALES» y «HÁBITOS Y ESTILO DE VIDA SALUDABLES».
-- Todo lo de esas tres columnas es recomendación GENERAL, salvo relación explícita con examen.
-- NO asocies «SVE VISUAL: ... CONTROL ANUAL POR OPTOMETRÍA» a Optometría solo por contener OPTOMETRÍA. Sí puede sustentar vigilancia visual porque dice SVE VISUAL.
-- No descartes indicaciones cortas: «USO DE EPP», «CONTROL DE PESO», «HACER DEPORTE», «DIETA BALANCEADA», «HÁBITOS SALUDABLES».
+- Conserva íntegramente las tres columnas. Primero clasifica cada frase como recomendación transversal o como recomendación asociable a un examen.
+- En este formato SÍ puedes asociar una recomendación a un examen cuando exista una relación semántica fuerte e inequívoca: visual/óptica/optometría/astigmatismo/presbicia → Optometría; ortopedia/espalda/ergonomía/higiene postural/pausas activas → Énfasis osteomuscular; auditivo/audiometría/ruido → Audiometría; respiratorio/espirometría → Espirometría; cardiaco/electrocardiograma → Electrocardiograma.
+- NO fuerces asociación para recomendaciones transversales como «USO DE EPP», «HÁBITOS SALUDABLES», «CONTROL DE PESO», «HACER DEPORTE» o «DIETA BALANCEADA»; déjalas en Recomendaciones generales.
+- «EXAMEN VISUAL DE CONTROL EN UN AÑO» y «SVE VISUAL: ... CONTROL ANUAL POR OPTOMETRÍA» son recomendaciones visuales y pueden asociarse a Optometría sin resumir su texto. La mención SVE VISUAL además sustenta vigilancia visual.
+- No descartes indicaciones cortas y no resumas ninguna recomendación.
 
 FORMATO TIPO B — EXAMEN IZQUIERDA / RECOMENDACIÓN DERECHA:
 - Puede decir «EXÁMENES DE DIAGNÓSTICO LABORAL REALIZADOS - RECOMENDACIONES».
 - La celda izquierda es examen; la derecha es su recomendación.
 - «OPTOMETRÍA | controles preventivos...» => recomendación de Optometría.
 - «GLICEMIA | REALIZADO» => Glicemia sí es examen realizado, pero «REALIZADO» NO es recomendación.
+- Si la recomendación se parte en varias líneas visuales, une todas esas líneas a la misma fila/examen hasta que empiece otro examen o una nueva sección. No pierdas palabras por saltos de línea.
 
 REGLAS ESTRICTAS:
-1. RECOMENDACIONES POR EXAMEN: relaciona solo por misma fila/celda, encabezado inequívoco o prefijo «Examen: recomendación». Nunca por palabras internas.
-2. RECOMENDACIONES GENERALES: conserva recomendaciones médicas, ocupacionales y hábitos sin examen explícito. No resumas ni elimines recomendaciones cortas.
+1. RECOMENDACIONES POR EXAMEN: en el formato B relaciona por misma fila/celda, encabezado inequívoco o prefijo «Examen: recomendación». En el formato A permite relación semántica FUERTE según las reglas anteriores. Incluye TODOS los exámenes realizados en recomendaciones_por_examen; si un examen no tiene recomendación sustentada usa lista vacía.
+2. RECOMENDACIONES GENERALES: conserva las recomendaciones transversales y las que no puedan asociarse con suficiente certeza. No resumas, no parafrasees y no elimines detalles; cada elemento debe conservar el texto clínico completo.
 3. OBSERVACIONES: si existe el campo exacto «Observaciones: ...», conserva TODO su contenido como observación aunque diga «CONTROL DE PESO», «VALORACIÓN POR NUTRICIÓN», «PAUTAS ERGONÓMICAS» o «USO DE CORRECCIÓN ÓPTICA». Solo en «OTRAS OBSERVACIONES Y RECOMENDACIONES» separa observaciones descriptivas de recomendaciones.
 4. REMISIONES: dentro de «Información de Remisiones» / «Remisiones», cada destino listado (ej. «NUTRICIÓN», «MEDICINA GENERAL EPS») ES remisión aunque no repita «remitir». Fuera de esa sección exige «se remite», «remisión a», «remitir a» o «interconsulta». Si dice No/No aplica/Sin remisiones, devuelve «No».
 5. VIGILANCIA: dentro del bloque «Ingresar al Programa de Vigilancia Epidemiológica...» una fila «VISUAL | SVE» significa vigilancia visual. Una mención «SVE VISUAL: ...» también es evidencia. No infieras PVE/SVE solo por temática si no aparece PVE/SVE/programa o no está en el bloque dedicado.
@@ -448,7 +469,7 @@ ${text}`;
 
 Verifica obligatoriamente:
 - Tabla examen/recomendación: relación por FILA, no por palabras internas.
-- Tres columnas médicas/ocupacionales/hábitos: conservar como generales salvo asociación explícita.
+- Tres columnas médicas/ocupacionales/hábitos: conservar todo; asociar solo relaciones semánticas fuertes por examen y mantener generales las recomendaciones transversales.
 - «REALIZADO» es estado, no recomendación.
 - «Observaciones:» conserva todo el campo.
 - En «Información de Remisiones», NUTRICIÓN o MEDICINA GENERAL EPS son remisiones.
@@ -698,76 +719,87 @@ function cleanEmailList_(value) {
 
 function validEmail_(value) { return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(value || '').trim()); }
 
-function authorizePortalServices() {
-  // EJECUTAR MANUALMENTE desde el IDE de Apps Script una vez después de
-  // cambiar scopes o servicios. NO envolver requireAllScopes() en try/catch:
-  // si falta un permiso, Apps Script debe detener esta ejecución y mostrar
-  // la pantalla de consentimiento.
-  ScriptApp.requireAllScopes(ScriptApp.AuthMode.FULL);
+function forceReauthorizePortalServices() {
+  // Compatibilidad con versiones anteriores. La autorización real se obtiene al
+  // ejecutar authorizePortalServices() desde el editor; no es necesario invalidar
+  // scopes ni usar ScriptApp.requireScopes().
+  console.log('Ejecuta authorizePortalServices() desde el editor y acepta todos los permisos solicitados.');
+  return { reset:false, next:'Ejecuta authorizePortalServices()' };
+}
 
-  const probe = testExternalRequestPermission_();
+function authorizePortalServices() {
+  // EJECUTAR MANUALMENTE desde el editor de Apps Script. Al tocar directamente
+  // los servicios, Apps Script solicita los scopes declarados en appsscript.json.
+  const external = UrlFetchApp.fetch('https://www.google.com/generate_204', {
+    method:'get', muteHttpExceptions:true, followRedirects:true
+  });
   const quota = MailApp.getRemainingDailyQuota();
   const db = getDb_();
   const rootName = DriveApp.getRootFolder().getName();
-
-  const authInfo = ScriptApp.getAuthorizationInfo(ScriptApp.AuthMode.FULL);
-  const authorizedScopes = authInfo.getAuthorizedScopes() || [];
-
   const result = {
-    authorized: true,
-    externalRequest: probe.ok,
-    externalResponseCode: probe.responseCode,
-    mailQuota: quota,
-    database: db.getName(),
-    driveRoot: rootName,
-    authorizationStatus: String(authInfo.getAuthorizationStatus()),
-    authorizedScopes: authorizedScopes,
-    message: 'Autorización completa verificada: Gemini/UrlFetchApp, correo, Sheets y Drive.'
+    authorized:true,
+    externalRequest:external.getResponseCode() >= 200 && external.getResponseCode() < 400,
+    externalResponseCode:external.getResponseCode(),
+    mailQuota:quota,
+    database:db.getName(),
+    driveRoot:rootName,
+    message:'Servicios autorizados correctamente: Gemini/UrlFetchApp, correo, Sheets y Drive.'
   };
-
   console.log(JSON.stringify(result));
   return result;
 }
 
-function testExternalRequestPermission_() {
-  // Llamada mínima y sin datos del portal. Si este método falla con
-  // script.external_request, el problema sigue siendo exclusivamente OAuth.
-  const response = UrlFetchApp.fetch('https://www.google.com/generate_204', {
-    method: 'get',
-    muteHttpExceptions: true,
-    followRedirects: true
-  });
-  const code = response.getResponseCode();
-  return { ok: code >= 200 && code < 400, responseCode: code };
+function aiStatus_(user) {
+  const props = PropertiesService.getScriptProperties();
+  const apiKey = String(props.getProperty('GEMINI_API_KEY') || '').trim();
+  const model = String(props.getProperty('GEMINI_MODEL') || DEFAULT_GEMINI_MODEL).replace(/^models\//,'').trim();
+  if (!apiKey) return { ready:false, apiKeyConfigured:false, model:model, detail:'No hay API key de Gemini configurada.' };
+  try {
+    const response = UrlFetchApp.fetch(GEMINI_GENERATE_BASE_URL + encodeURIComponent(model) + '?key=' + encodeURIComponent(apiKey), {
+      method:'get', muteHttpExceptions:true, followRedirects:true
+    });
+    const status = response.getResponseCode();
+    return {
+      ready:status >= 200 && status < 300,
+      apiKeyConfigured:true,
+      externalRequest:true,
+      model:model,
+      status:status,
+      detail:status >= 200 && status < 300 ? 'Gemini y UrlFetchApp autorizados.' : response.getContentText().slice(0,500)
+    };
+  } catch (error) {
+    return {
+      ready:false,
+      apiKeyConfigured:true,
+      externalRequest:false,
+      authorizationError:/script\.external_request|UrlFetchApp|permiso|permission|authorization/i.test(String(error && error.message || error)),
+      model:model,
+      detail:String(error && error.message || error)
+    };
+  }
 }
 
 function testGeminiPermission() {
-  // Prueba manual independiente para el IDE. Ejecuta esta función si quieres
-  // comprobar UrlFetchApp sin consumir una llamada de Gemini.
-  ScriptApp.requireScopes(ScriptApp.AuthMode.FULL, [
-    'https://www.googleapis.com/auth/script.external_request',
-    'https://www.googleapis.com/auth/script.scriptapp'
-  ]);
-  const probe = testExternalRequestPermission_();
-  console.log(JSON.stringify(probe));
-  return probe;
+  const response = UrlFetchApp.fetch('https://www.google.com/generate_204', {
+    method:'get', muteHttpExceptions:true, followRedirects:true
+  });
+  const result = { ok:response.getResponseCode() >= 200 && response.getResponseCode() < 400, responseCode:response.getResponseCode() };
+  console.log(JSON.stringify(result));
+  return result;
 }
 
-function getAuthorizationDiagnostics() {
-  const requiredScopes = [
-    'https://www.googleapis.com/auth/script.external_request',
-    'https://www.googleapis.com/auth/script.send_mail',
-    'https://www.googleapis.com/auth/spreadsheets',
-    'https://www.googleapis.com/auth/drive',
-    'https://www.googleapis.com/auth/script.scriptapp'
-  ];
-  const info = ScriptApp.getAuthorizationInfo(ScriptApp.AuthMode.FULL, requiredScopes);
-  const result = {
-    status: String(info.getAuthorizationStatus()),
-    authorizedScopes: info.getAuthorizedScopes() || [],
-    authorizationUrl: info.getAuthorizationUrl() || '',
-    requiredScopes: requiredScopes
-  };
+function testGeminiApi() {
+  const props = PropertiesService.getScriptProperties();
+  const apiKey = String(props.getProperty('GEMINI_API_KEY') || '').trim();
+  if (!apiKey) throw new Error('No hay GEMINI_API_KEY guardada.');
+  const model = String(props.getProperty('GEMINI_MODEL') || DEFAULT_GEMINI_MODEL).replace(/^models\//,'');
+  const url = GEMINI_GENERATE_BASE_URL + encodeURIComponent(model) + ':generateContent';
+  const response = UrlFetchApp.fetch(url, {
+    method:'post', contentType:'application/json', muteHttpExceptions:true,
+    headers:{'x-goog-api-key':apiKey},
+    payload:JSON.stringify({ contents:[{role:'user',parts:[{text:'Responde únicamente OK'}]}] })
+  });
+  const result = { ok:response.getResponseCode() >= 200 && response.getResponseCode() < 300, status:response.getResponseCode(), body:response.getContentText().slice(0,500) };
   console.log(JSON.stringify(result));
   return result;
 }

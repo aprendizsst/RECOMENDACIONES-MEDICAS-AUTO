@@ -6,7 +6,7 @@
     selectedOriginalId: null, originalPage: 1, selectedOutputId: null,
     user: null, localMode: false, backendOnline: false, backendInfo: null,
     controlTab: 'validation', lastCacheStats: { generated: 0, reused: 0 },
-    parserReady: false, authBootstrap: null
+    parserReady: false, authBootstrap: null, selectedBatchIds: new Set(), aiStatus: null
   };
 
   const viewMeta = {
@@ -93,6 +93,19 @@
     qsa('[data-auth-panel]').forEach((p) => p.classList.toggle('hidden', p.dataset.authPanel !== tab));
   }
 
+  async function clearWorkspaceForNewSession() {
+    await SSTDB.clear(SSTDB.stores.documents);
+    await SSTDB.clear(SSTDB.stores.outputs);
+    state.documents = [];
+    state.outputs = [];
+    state.selectedDocId = null;
+    state.selectedOriginalId = null;
+    state.selectedOutputId = null;
+    state.selectedBatchIds.clear();
+    state.originalPage = 1;
+    state.lastCacheStats = { generated:0, reused:0 };
+  }
+
   async function enterApp() {
     $('appBoot').classList.add('hidden'); $('authView').classList.add('hidden'); $('appView').classList.remove('hidden');
     const name = state.user?.name || (state.localMode ? 'Revisión local' : 'Usuario');
@@ -128,6 +141,7 @@
     if (!state.selectedDocId && state.documents[0]) state.selectedDocId = state.documents[0].id;
     if (!state.selectedOriginalId && state.documents[0]) state.selectedOriginalId = state.documents[0].id;
     if (!state.selectedOutputId && state.outputs[0]) state.selectedOutputId = state.outputs[0].id;
+    if (!state.selectedBatchIds.size && state.documents.length) state.documents.forEach((d) => state.selectedBatchIds.add(d.id));
     await renderAll();
     await renderAssetSettings();
     if (state.backendOnline && !state.localMode && state.documents.length) {
@@ -141,8 +155,36 @@
     return doc.aiValidationVersion !== APP_CONFIG.aiValidationVersion || doc.aiValidationStatus !== 'validated' || !doc.aiValidatedAt;
   }
 
+  async function ensureAiReady(options = {}) {
+    const { notify = false } = options;
+    if (!state.backendOnline || state.localMode) {
+      state.aiStatus = { ready:false, detail:'El backend seguro no está conectado.' };
+      return false;
+    }
+    try {
+      const ai = await SSTBackend.call('aiStatus', {}, { timeout:30000 });
+      state.aiStatus = ai;
+      if ($('qualityGemini')) $('qualityGemini').textContent = ai.ready ? `Lista · ${ai.model || ''}` : 'Requiere autorización';
+      if ($('aiStatusBadge')) {
+        $('aiStatusBadge').textContent = ai.ready ? 'IA lista' : 'IA pendiente';
+        $('aiStatusBadge').className = `status-badge ${ai.ready ? 'success' : 'error'}`;
+      }
+      if ($('aiStatusDetail')) $('aiStatusDetail').textContent = ai.ready
+        ? `Gemini ${ai.model || ''} conectado. Cada PDF se audita automáticamente antes de poder generar.`
+        : (ai.detail || 'Gemini no está listo.');
+      if (!ai.ready && notify) toast('IA pendiente de autorización', ai.detail || 'Autoriza UrlFetchApp en Google Apps Script.', 'error', 9000);
+      return !!ai.ready;
+    } catch (error) {
+      state.aiStatus = { ready:false, detail:error.message };
+      if (notify) toast('IA no disponible', error.message, 'error', 9000);
+      return false;
+    }
+  }
+
   async function runAutomaticAiAudit(doc, options = {}) {
     if (!doc?.blob || !needsAutomaticAiAudit(doc)) return doc;
+    const ready = state.aiStatus?.ready === true || await ensureAiReady({ notify:false });
+    if (!ready) throw new Error(state.aiStatus?.detail || 'Gemini no está autorizado en Apps Script.');
     const buffer = options.buffer || await doc.blob.arrayBuffer();
     const sourceText = options.sourceText || doc.text || '';
     const label = options.label || doc.fileName || 'certificado.pdf';
@@ -157,6 +199,7 @@
         model: await SSTDB.getSetting('geminiModel', APP_CONFIG.defaultGeminiModel)
       }, { timeout:195000 });
       doc.data = await SSTParser.fuse(doc.data, aiData, sourceText);
+      doc.data.validado_ia = true;
       doc.aiError = '';
       doc.aiValidationStatus = 'validated';
       doc.aiValidationVersion = APP_CONFIG.aiValidationVersion;
@@ -180,6 +223,15 @@
     if (!state.backendOnline || state.localMode) return;
     const pending = state.documents.filter(needsAutomaticAiAudit);
     if (!pending.length) return;
+    if (!(await ensureAiReady({ notify:false }))) {
+      for (const doc of pending) {
+        doc.aiValidationStatus = 'pending_auth';
+        doc.aiError = state.aiStatus?.detail || 'Gemini pendiente de autorización.';
+        await SSTDB.put(SSTDB.stores.documents, doc);
+      }
+      await renderAll();
+      return;
+    }
     $('processingBanner').classList.remove('hidden');
     let ok = 0, failed = 0;
     try {
@@ -199,6 +251,23 @@
 
   async function refreshBackendDiagnostics() {
     if (!state.backendOnline || state.localMode) return;
+    try {
+      const ai = await SSTBackend.call('aiStatus', {}, { timeout: 30000 });
+      state.aiStatus = ai;
+      $('qualityGemini').textContent = ai.ready ? `Lista · ${ai.model || ''}` : 'Requiere autorización';
+      if ($('aiStatusBadge')) {
+        $('aiStatusBadge').textContent = ai.ready ? 'IA lista' : 'IA pendiente';
+        $('aiStatusBadge').className = `status-badge ${ai.ready ? 'success' : 'error'}`;
+      }
+      if ($('aiStatusDetail')) $('aiStatusDetail').textContent = ai.ready
+        ? `Gemini ${ai.model || ''} conectado y autorizado para validar automáticamente todos los PDF.`
+        : `${ai.detail || 'Gemini no está listo.'}${ai.authorizationError ? ' Ejecuta authorizePortalServices() en Apps Script y publica una nueva versión.' : ''}`;
+    } catch (error) {
+      state.aiStatus = { ready:false, detail:error.message };
+      $('qualityGemini').textContent = 'Error';
+      if ($('aiStatusBadge')) { $('aiStatusBadge').textContent='IA pendiente'; $('aiStatusBadge').className='status-badge error'; }
+      if ($('aiStatusDetail')) $('aiStatusDetail').textContent = error.message;
+    }
     try {
       const mail = await SSTBackend.call('mailStatus', {}, { timeout: 30000 });
       $('emailBackendBadge').textContent = mail.ready ? `Correo listo · cupo ${mail.remainingQuota ?? '—'}` : `Correo sin cupo · ${mail.remainingQuota ?? 0}`;
@@ -262,10 +331,10 @@
 
   function renderDashboard() {
     const aiCount = state.documents.filter((d) => d.data?.validado_ia).length;
-    $('metricDocs').textContent = state.documents.length; $('metricDocsSub').textContent = state.documents.length ? `${state.documents.length} disponibles en caché` : 'Sin documentos';
+    $('metricDocs').textContent = state.documents.length; $('metricDocsSub').textContent = state.documents.length ? `${state.documents.length} en la sesión actual` : 'Sesión limpia';
     $('metricAi').textContent = aiCount; $('metricGenerated').textContent = state.outputs.length; $('metricCache').textContent = `${state.lastCacheStats.reused} reutilizados`;
     $('metricEmails').textContent = state.emailHistory.filter((x) => String(x.status || x.estado || '').toLowerCase().includes('enviado')).length;
-    $('qualityOcr').textContent = $('toggleOcr').checked ? 'Activo' : 'Desactivado'; $('qualityCache').textContent = 'Activo';
+    $('qualityOcr').textContent = $('toggleOcr').checked ? 'Activo' : 'Desactivado'; $('qualityCache').textContent = 'Limpia al iniciar';
     const recent = state.documents.slice(0,5);
     $('recentDocuments').className = recent.length ? 'recent-list' : 'empty-state compact';
     $('recentDocuments').innerHTML = recent.length ? recent.map((d) => `<div class="document-item" data-dashboard-doc="${d.id}"><div class="doc-icon">PDF</div><div class="doc-main"><strong>${SSTUtils.escapeHtml(d.data?.nombre || d.fileName)}</strong><small>${SSTUtils.escapeHtml(d.fileName)}</small><em>${d.data?.modo_validacion ? SSTUtils.escapeHtml(d.data.modo_validacion) : 'Respaldo local'}${d.data?.calidad_extraccion ? ` · Calidad ${SSTUtils.escapeHtml(d.data.calidad_extraccion)}` : ''}</em></div><span class="mini-status ${d.data?.validado_ia ? 'ai' : ''}"></span></div>`).join('') : '<span>▣</span><strong>No hay documentos cargados</strong><p>Los certificados aparecerán aquí al cargarlos.</p>';
@@ -276,11 +345,21 @@
     return text.includes(String(query || '').trim().toLowerCase());
   }
 
+  function renderBatchSelectionSummary() {
+    const selected = state.documents.filter((d) => state.selectedBatchIds.has(d.id)).length;
+    if ($('selectedDocCount')) $('selectedDocCount').textContent = `${selected} seleccionado${selected === 1 ? '' : 's'}`;
+    if ($('btnGenerateSelectedBatch')) $('btnGenerateSelectedBatch').disabled = selected === 0;
+  }
+
   function renderDocumentList() {
     const query = $('documentSearch')?.value || '';
     const docs = state.documents.filter((d) => documentMatches(d, query));
     $('docListCount').textContent = state.documents.length;
-    $('documentList').innerHTML = docs.length ? docs.map((d) => `<div class="document-item ${d.id === state.selectedDocId ? 'active' : ''}" data-doc-id="${d.id}"><div class="doc-icon">PDF</div><div class="doc-main"><strong>${SSTUtils.escapeHtml(d.data?.nombre || 'Sin nombre')}</strong><small>${SSTUtils.escapeHtml(d.fileName)}</small><em>${d.dirty ? 'Editado · requiere actualizar salida' : `${d.data?.modo_validacion || (d.data?.validado_ia ? 'IA + motor local' : 'Motor local')} · Calidad ${d.data?.calidad_extraccion || '—'}`}${d.aiError ? ' · IA con alerta' : ''}</em></div><span class="mini-status ${d.data?.validado_ia ? 'ai' : (d.dirty ? 'warn' : '')}"></span><button class="item-delete" type="button" data-delete-doc="${d.id}" title="Eliminar este archivo" aria-label="Eliminar ${SSTUtils.escapeHtml(d.fileName)}">×</button></div>`).join('') : '<div class="empty-state compact"><span>▣</span><strong>Sin certificados</strong></div>';
+    $('documentList').innerHTML = docs.length ? docs.map((d) => {
+      const aiState = d.aiValidationStatus === 'validated' ? 'IA validada' : (d.aiValidationStatus === 'pending_auth' ? 'IA pendiente' : (d.aiValidationStatus === 'error' ? 'IA con error' : 'IA pendiente'));
+      return `<div class="document-item ${d.id === state.selectedDocId ? 'active' : ''}" data-doc-id="${d.id}"><label class="batch-check" title="Incluir en vista previa/lote"><input type="checkbox" class="batch-select" data-batch-id="${d.id}" ${state.selectedBatchIds.has(d.id) ? 'checked' : ''}><span></span></label><div class="doc-icon">PDF</div><div class="doc-main"><strong>${SSTUtils.escapeHtml(d.data?.nombre || 'Sin nombre')}</strong><small>${SSTUtils.escapeHtml(d.fileName)}</small><em>${d.dirty ? 'Editado · requiere actualizar salida' : `${aiState} · ${d.data?.perfil_documental || 'Formato detectado'} · Calidad ${d.data?.calidad_extraccion || '—'}`}</em></div><span class="mini-status ${d.aiValidationStatus === 'validated' ? 'ai' : (d.dirty ? 'warn' : '')}"></span><button class="item-delete" type="button" data-delete-doc="${d.id}" title="Eliminar este archivo" aria-label="Eliminar ${SSTUtils.escapeHtml(d.fileName)}">×</button></div>`;
+    }).join('') : '<div class="empty-state compact"><span>▣</span><strong>Sin certificados</strong></div>';
+    renderBatchSelectionSummary();
   }
 
   function selectedDocument() { return state.documents.find((d) => d.id === state.selectedDocId) || null; }
@@ -302,19 +381,34 @@
     if (!doc) return;
     const d = doc.data || {};
     $('editorSourceFile').textContent = doc.fileName; $('editorPersonTitle').textContent = d.nombre || 'Trabajador sin identificar'; $('editorValidationMode').textContent = `${d.modo_validacion || 'Motor local'} · ${d.perfil_documental || 'Formato genérico'} · Calidad ${d.calidad_extraccion || '—'}`;
-    $('editorStatusText').textContent = doc.dirty ? 'Cambios sin regenerar' : ((d.campos_revision || []).length ? `Revisar: ${(d.campos_revision || []).join(', ')}` : 'Revisión disponible'); $('editorStatusDot').className = `status-dot ${doc.dirty ? 'warn' : 'success'}`;
+    const aiOk = doc.aiValidationStatus === 'validated';
+    const review = (d.campos_revision || []).length ? ` · revisar ${(d.campos_revision || []).join(', ')}` : '';
+    $('editorStatusText').textContent = doc.dirty ? `Editado · ${aiOk ? 'IA validada' : 'IA pendiente'}${review}` : `${aiOk ? 'IA validada automáticamente' : 'IA pendiente'}${review}`;
+    $('editorStatusDot').className = `status-dot ${aiOk && !doc.dirty ? 'success' : 'warn'}`;
+    if ($('btnValidateAiSelected')) {
+      $('btnValidateAiSelected').classList.toggle('hidden', aiOk);
+      $('btnValidateAiSelected').textContent = '↻ Reintentar IA';
+    }
     const values = { fieldName:d.nombre, fieldId:d.identificacion, fieldEmail:d.correo, fieldRole:d.cargo, fieldExamType:d.tipo_examen, fieldDate:d.fecha || SSTUtils.todayIso(), fieldPlace:d.lugar || 'Tunja', fieldSurveillance:d.vigilancia_programa, fieldObservations:d.observaciones, fieldReferrals:d.remisiones };
     for (const [id,value] of Object.entries(values)) $(id).value = value ?? '';
     $('fieldExams').value = (d.examenes_lista || []).join('\n');
     const pending = d.recomendaciones_pendientes_revision || [];
     $('pendingReviewBox').classList.toggle('hidden', !pending.length); $('fieldPending').value = pending.join('\n');
-    renderRecommendationGroups(normalizedMap(d));
+    const recMap = normalizedMap(d);
+    renderRecommendationGroups(recMap);
+    if ($('recommendationCoverage')) {
+      const exams = (d.examenes_lista || []).filter(Boolean);
+      const covered = exams.filter((exam) => Array.isArray(recMap[exam]) && recMap[exam].length).length;
+      $('recommendationCoverage').textContent = `${covered} / ${exams.length} con detalle`;
+      $('recommendationCoverage').className = `status-badge ${covered === exams.length && exams.length ? 'success' : 'warn'}`;
+      $('recommendationCoverage').title = 'Un examen puede quedar sin recomendación solo si el PDF no contiene una indicación sustentada para ese examen.';
+    }
     $('saveState').textContent = doc.dirty ? 'Cambios guardados · salida pendiente de actualizar' : 'Cambios guardados automáticamente';
   }
 
   function renderRecommendationGroups(map) {
     const entries = Object.entries(map || {});
-    $('recommendationGroups').innerHTML = (entries.length ? entries : [['Recomendaciones generales',[]]]).map(([exam,recs],i) => `<div class="recommendation-card" data-rec-group="${i}"><div class="recommendation-card-head"><input class="rec-exam" value="${SSTUtils.escapeHtml(exam)}" aria-label="Examen"><button class="remove-group" type="button" title="Eliminar grupo">×</button></div><textarea class="rec-text" rows="4" placeholder="Una recomendación por línea">${SSTUtils.escapeHtml((recs || []).join('\n'))}</textarea></div>`).join('');
+    $('recommendationGroups').innerHTML = (entries.length ? entries : [['Recomendaciones generales',[]]]).map(([exam,recs],i) => `<div class="recommendation-card" data-rec-group="${i}"><div class="recommendation-card-head"><input class="rec-exam" value="${SSTUtils.escapeHtml(exam)}" aria-label="Examen"><button class="remove-group" type="button" title="Eliminar grupo">×</button></div><textarea class="rec-text" rows="4" placeholder="Detalle completo del examen. Puedes separar hallazgos por línea; al generar se integrarán en un solo párrafo.">${SSTUtils.escapeHtml((recs || []).join('\n'))}</textarea></div>`).join('');
   }
 
   const saveSelectedDebounced = SSTUtils.debounce(async () => {
@@ -342,9 +436,12 @@
 
   function validateForGeneration(doc) {
     const d = doc?.data || {}; const missing = [];
-    if (!String(d.nombre || '').trim()) missing.push('nombre'); if (!String(d.cargo || '').trim()) missing.push('cargo'); if (!(d.examenes_lista || []).length) missing.push('exámenes realizados');
+    if (!String(d.nombre || '').trim()) missing.push('nombre');
+    if (!String(d.cargo || '').trim()) missing.push('cargo');
+    if (!(d.examenes_lista || []).length) missing.push('exámenes realizados');
     const pending = d.recomendaciones_pendientes_revision || [];
     if (pending.length) missing.push('fragmentos pendientes de revisión');
+    if (APP_CONFIG.aiRequiredForGeneration && doc?.aiValidationStatus !== 'validated') missing.push('validación automática con IA');
     return missing;
   }
 
@@ -382,6 +479,8 @@
       state.parserReady = true;
       const aiEnabled = true;
       const ocrEnabled = await SSTDB.getSetting('ocrEnabled', true);
+      const aiReady = await ensureAiReady({ notify:false });
+      if (!aiReady) toast('IA pendiente', state.aiStatus?.detail || 'Los PDF se extraerán localmente, pero no podrán generarse hasta completar la validación automática con IA.', 'warn', 8500);
       for (let index=0; index<files.length; index++) {
         const file = files[index];
         updateProcessing(`Procesando ${index+1} de ${files.length}`, file.name, index/files.length);
@@ -392,13 +491,19 @@
           if (!state.documents.some((d) => d.id === cached.id)) state.documents.unshift(cached);
           state.selectedDocId = cached.id;
           state.selectedOriginalId = cached.id;
-          if (aiEnabled && needsAutomaticAiAudit(cached)) {
+          state.selectedBatchIds.add(cached.id);
+          if (aiEnabled && aiReady && needsAutomaticAiAudit(cached)) {
             updateProcessing(`Validando caché con IA ${index+1} de ${files.length}`, `${file.name} · faltaba auditoría IA vigente`, (index+.72)/files.length);
             try {
               await runAutomaticAiAudit(cached, { buffer, sourceText:cached.text || '', title:`Validando con IA ${index+1} de ${files.length}`, ratio:(index+.86)/files.length });
             } catch (error) { console.warn('Gemini automático en caché:', error); }
           } else {
-            updateProcessing(`Reutilizando ${index+1} de ${files.length}`, `${file.name} ya estaba procesado y validado`, (index+1)/files.length);
+            if (needsAutomaticAiAudit(cached) && !aiReady) {
+              cached.aiValidationStatus = 'pending_auth';
+              cached.aiError = state.aiStatus?.detail || 'Gemini pendiente de autorización.';
+              await SSTDB.put(SSTDB.stores.documents, cached);
+            }
+            updateProcessing(`Reutilizando ${index+1} de ${files.length}`, `${file.name} ya fue extraído; ${cached.aiValidationStatus === 'validated' ? 'IA vigente' : 'IA pendiente'}`, (index+1)/files.length);
           }
           continue;
         }
@@ -436,20 +541,22 @@
 
         data.fecha = data.fecha || SSTUtils.todayIso(); data.lugar = data.lugar || 'Tunja';
         let aiError = '';
-        if (aiEnabled && state.backendOnline && !state.localMode && file.size <= APP_CONFIG.maxGeminiPdfMb*1024*1024) {
+        if (aiEnabled && aiReady && file.size <= APP_CONFIG.maxGeminiPdfMb*1024*1024) {
           try {
             updateProcessing(`Validando con IA ${index+1} de ${files.length}`, `${file.name} · lectura visual completa`, (index+.82)/files.length);
             const aiData = await SSTBackend.call('geminiAnalyze', { fileName:file.name, pdfBase64:SSTUtils.arrayBufferToBase64(buffer), text:extraction.text.slice(0,50000), localData:data, model:await SSTDB.getSetting('geminiModel', APP_CONFIG.defaultGeminiModel) }, { timeout: 195000 });
             data = await SSTParser.fuse(data, aiData, extraction.text);
+            data.validado_ia = true;
           } catch (error) { aiError = error.message; console.warn('Gemini:', error); data.modo_validacion = 'Respaldo local · IA pendiente'; }
-        } else if (aiEnabled && file.size > APP_CONFIG.maxGeminiPdfMb*1024*1024) aiError = `PDF mayor a ${APP_CONFIG.maxGeminiPdfMb} MB; se usó análisis local.`;
+        } else if (aiEnabled && file.size > APP_CONFIG.maxGeminiPdfMb*1024*1024) aiError = `PDF mayor a ${APP_CONFIG.maxGeminiPdfMb} MB; no puede enviarse a la validación IA.`;
+        else if (aiEnabled && !aiReady) aiError = state.aiStatus?.detail || 'Gemini pendiente de autorización.';
         const now = new Date().toISOString();
-        const aiWasValidated = !aiError && aiEnabled && state.backendOnline && !state.localMode && file.size <= APP_CONFIG.maxGeminiPdfMb*1024*1024;
-        const row = { id:staleId || crypto.randomUUID(), hash, fileName:file.name, size:file.size, type:'application/pdf', blob, text:extraction.text, pageCount:extraction.pageCount, usedOcr:extraction.usedOcr, aiError, data, pipelineVersion:APP_CONFIG.pipelineVersion, aiValidationStatus: aiWasValidated ? 'validated' : (file.size > APP_CONFIG.maxGeminiPdfMb*1024*1024 ? 'skipped_size' : (aiError ? 'error' : 'pending')), aiValidationVersion: aiWasValidated ? APP_CONFIG.aiValidationVersion : '', aiValidatedAt: aiWasValidated ? now : '', aiLastAttemptAt: aiError ? now : '', dirty:false, createdAt:cached?.createdAt || now, updatedAt:now };
+        const aiWasValidated = !aiError && aiEnabled && aiReady && file.size <= APP_CONFIG.maxGeminiPdfMb*1024*1024;
+        const row = { id:staleId || crypto.randomUUID(), hash, fileName:file.name, size:file.size, type:'application/pdf', blob, text:extraction.text, pageCount:extraction.pageCount, usedOcr:extraction.usedOcr, aiError, data, pipelineVersion:APP_CONFIG.pipelineVersion, aiValidationStatus: aiWasValidated ? 'validated' : (file.size > APP_CONFIG.maxGeminiPdfMb*1024*1024 ? 'skipped_size' : (!aiReady ? 'pending_auth' : (aiError ? 'error' : 'pending'))), aiValidationVersion: aiWasValidated ? APP_CONFIG.aiValidationVersion : '', aiValidatedAt: aiWasValidated ? now : '', aiLastAttemptAt: aiError ? now : '', dirty:false, createdAt:cached?.createdAt || now, updatedAt:now };
         await SSTDB.put(SSTDB.stores.documents, row);
         const oldIndex = state.documents.findIndex((d) => d.id === row.id);
         if (oldIndex >= 0) state.documents.splice(oldIndex,1);
-        state.documents.unshift(row); state.selectedDocId = row.id; state.selectedOriginalId = row.id;
+        state.documents.unshift(row); state.selectedDocId = row.id; state.selectedOriginalId = row.id; state.selectedBatchIds.add(row.id);
         updateProcessing(`Completado ${index+1} de ${files.length}`, data.nombre || file.name, (index+1)/files.length);
       }
       state.documents.sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
@@ -468,6 +575,7 @@
     await SSTDB.delete(SSTDB.stores.outputs, id);
     state.documents = state.documents.filter((d) => d.id !== id);
     state.outputs = state.outputs.filter((o) => o.id !== id && o.documentId !== id);
+    state.selectedBatchIds.delete(id);
     if (state.selectedDocId === id) state.selectedDocId = state.documents[0]?.id || null;
     if (state.selectedOriginalId === id) { state.selectedOriginalId = state.documents[0]?.id || null; state.originalPage = 1; }
     if (state.selectedOutputId === id) state.selectedOutputId = state.outputs[0]?.id || null;
@@ -485,6 +593,7 @@
     state.selectedDocId = null;
     state.selectedOriginalId = null;
     state.selectedOutputId = null;
+    state.selectedBatchIds.clear();
     state.originalPage = 1;
     state.lastCacheStats = { generated:0, reused:0 };
     await renderAll();
@@ -519,6 +628,7 @@
         model:await SSTDB.getSetting('geminiModel', APP_CONFIG.defaultGeminiModel)
       }, { timeout:195000 });
       doc.data = await SSTParser.fuse(doc.data, aiData, sourceText);
+      doc.data.validado_ia = true;
       doc.aiError = '';
       doc.aiValidationStatus = 'validated';
       doc.aiValidationVersion = APP_CONFIG.aiValidationVersion;
@@ -566,18 +676,39 @@
     finally { $('processingBanner').classList.add('hidden'); }
   }
 
-  async function generateAll() {
-    if (!state.documents.length) return toast('No hay documentos', 'Carga certificados antes de generar el lote.', 'warn');
-    const invalid = state.documents.filter((d) => validateForGeneration(d).length);
-    if (invalid.length) return toast('Lote incompleto', `Revisa: ${invalid.slice(0,5).map((d) => d.data?.nombre || d.fileName).join(', ')}${invalid.length>5?'…':''}`, 'warn', 7500);
+  function selectedBatchDocuments() {
+    return state.documents.filter((d) => state.selectedBatchIds.has(d.id));
+  }
+
+  async function generateDocumentsBatch(documents, label = 'lote') {
+    if (!documents.length) return toast('Sin selección', 'Selecciona al menos un certificado.', 'warn');
+    const invalid = documents.filter((d) => validateForGeneration(d).length);
+    if (invalid.length) {
+      const first = invalid[0];
+      const detail = invalid.slice(0,4).map((d) => `${d.data?.nombre || d.fileName}: ${validateForGeneration(d).join(', ')}`).join(' | ');
+      state.selectedDocId = first.id; renderDocumentList(); renderEditor();
+      return toast('Lote pendiente de validación', detail, 'warn', 9500);
+    }
     try {
       $('processingBanner').classList.remove('hidden');
-      const result = await SSTGenerator.generateAll(state.documents, null, (done,total,doc,status) => updateProcessing(`Generando lote · ${done}/${total}`, `${doc.data?.nombre || doc.fileName}${status==='reused'?' · reutilizado':''}`, total ? done/total : 0));
+      const result = await SSTGenerator.generateAll(documents, null, (done,total,doc,status) => updateProcessing(`Generando ${label} · ${done}/${total}`, `${doc.data?.nombre || doc.fileName}${status==='reused'?' · sin reproceso':''}`, total ? done/total : 0));
       state.outputs = (await SSTDB.getAll(SSTDB.stores.outputs)).sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
-      for (const doc of state.documents) { doc.dirty = false; await SSTDB.put(SSTDB.stores.documents, doc); }
-      state.lastCacheStats = { generated: result.generated, reused: result.reused }; await renderAll(); showView('generated'); toast('Lote listo', `${result.generated} generado(s) · ${result.reused} reutilizado(s).`, 'success', 6500);
-    } catch (error) { console.error(error); toast('No fue posible completar el lote', error.message, 'error', 8000); }
+      for (const doc of documents) { doc.dirty = false; await SSTDB.put(SSTDB.stores.documents, doc); }
+      state.lastCacheStats = { generated: result.generated, reused: result.reused };
+      if (result.outputs?.[0]) state.selectedOutputId = result.outputs[0].id;
+      await renderAll(); showView('generated');
+      toast('Vista previa lista', `${result.generated} generado(s) · ${result.reused} reutilizado(s) sin reproceso.`, 'success', 7000);
+    } catch (error) { console.error(error); toast('No fue posible completar la vista previa', error.message, 'error', 9000); }
     finally { $('processingBanner').classList.add('hidden'); }
+  }
+
+  async function generateSelectedBatch() {
+    return generateDocumentsBatch(selectedBatchDocuments(), 'selección');
+  }
+
+  async function generateAll() {
+    if (!state.documents.length) return toast('No hay documentos', 'Carga certificados antes de generar el lote.', 'warn');
+    return generateDocumentsBatch(state.documents, 'todo el lote');
   }
 
   function renderOriginals() {
@@ -590,10 +721,10 @@
 
   function renderGenerated() {
     $('generatedCount').textContent = state.outputs.length;
-    $('generatedList').innerHTML = state.outputs.length ? state.outputs.map((o) => { const doc = state.documents.find((d)=>d.id===o.id); return `<div class="document-item ${o.id===state.selectedOutputId?'active':''}" data-output-id="${o.id}"><div class="doc-icon">${o.format==='Word'?'DOC':'OUT'}</div><div class="doc-main"><strong>${SSTUtils.escapeHtml(o.personName || o.filename)}</strong><small>${SSTUtils.escapeHtml(o.filename)}</small><em>${doc?.dirty?'Desactualizado por edición':`Consecutivo ${SSTUtils.escapeHtml(o.consecutive || '—')}`}</em></div><span class="mini-status ${doc?.dirty?'warn':'ai'}"></span></div>`; }).join('') : '<div class="empty-state compact"><span>⇩</span><strong>No hay documentos generados</strong></div>';
+    $('generatedList').innerHTML = state.outputs.length ? state.outputs.map((o) => { const doc = state.documents.find((d)=>d.id===o.id); return `<div class="document-item ${o.id===state.selectedOutputId?'active':''}" data-output-id="${o.id}"><div class="doc-icon">${o.format==='Word'?'DOC':'OUT'}</div><div class="doc-main"><strong>${SSTUtils.escapeHtml(o.personName || o.filename)}</strong><small>${SSTUtils.escapeHtml(o.filename)}</small><em>${doc?.dirty?'Desactualizado por edición':`Consecutivo ${SSTUtils.escapeHtml(o.consecutive || '—')} · ${SSTUtils.escapeHtml(o.templateName || 'Plantilla institucional')}`}</em></div><span class="mini-status ${doc?.dirty?'warn':'ai'}"></span></div>`; }).join('') : '<div class="empty-state compact"><span>⇩</span><strong>No hay documentos generados</strong></div>';
     const out = selectedOutput(); const preview = $('generatedPreview');
     if (!out) { $('generatedViewerTitle').textContent='Selecciona un documento'; $('generatedViewerMeta').textContent='—'; preview.innerHTML='<div class="empty-state tall"><span>⇩</span><strong>Aún no hay vista previa</strong><p>Genera un documento desde la sección Documentos.</p></div>'; return; }
-    $('generatedViewerTitle').textContent = out.personName || out.filename; $('generatedViewerMeta').textContent = `${out.format} · ${out.consecutive || '—'}`;
+    $('generatedViewerTitle').textContent = out.personName || out.filename; $('generatedViewerMeta').textContent = `${out.format} · ${out.consecutive || '—'} · ${out.templateName || 'Plantilla institucional'}`;
     if (out.format === 'PDF') { preview.innerHTML=''; if (isViewActive('generated')) requestAnimationFrame(() => SSTPdf.renderAll(out.blob, preview).catch((e) => { preview.innerHTML=`<iframe title="Vista previa" srcdoc="${SSTUtils.escapeHtml(out.previewHtml)}"></iframe>`; console.warn(e); })); else preview.innerHTML='<div class="empty-state tall"><span>⇩</span><strong>PDF listo</strong><p>Abre esta sección para renderizar la vista previa.</p></div>'; }
     else { preview.innerHTML=''; const iframe=document.createElement('iframe'); iframe.title='Vista previa'; iframe.srcdoc=out.previewHtml; preview.appendChild(iframe); }
   }
@@ -675,8 +806,25 @@
   }
 
   async function renderAssetSettings() {
-    const template=await SSTDB.get(SSTDB.stores.assets,'template'), signature=await SSTDB.get(SSTDB.stores.assets,'signature');
-    $('templateStatus').textContent=template?'Personalizada':'Plantilla base'; $('templateStatus').className=`status-badge ${template?'success':''}`; $('templateFileName').textContent=template?.name || 'Se usa la plantilla base incluida';
+    let template=await SSTDB.get(SSTDB.stores.assets,'template'), signature=await SSTDB.get(SSTDB.stores.assets,'signature');
+    if (template?.blob && !template.validation) {
+      try {
+        template.validation = await SSTDocx.validateTemplate(await template.blob.arrayBuffer());
+        await SSTDB.put(SSTDB.stores.assets, template);
+      } catch (error) { template.validation = {valid:false,error:error.message,criticalMissing:[]}; }
+    }
+    const validation = template?.validation;
+    if (template) {
+      $('templateStatus').textContent = validation?.valid ? 'Validada' : 'Revisar plantilla';
+      $('templateStatus').className = `status-badge ${validation?.valid ? 'success' : 'warn'}`;
+      $('templateFileName').textContent = `${template.name}${validation?.markerCount != null ? ` · ${validation.markerCount}/${validation.totalMarkers} marcadores` : ''}`;
+      if ($('templateValidationDetail')) $('templateValidationDetail').textContent = validation?.valid
+        ? `Esta plantilla será la fuente real para Word, PDF y vista previa.${validation.recommendedMissing?.length ? ` Marcadores opcionales ausentes: ${validation.recommendedMissing.join(', ')}` : ''}`
+        : `La plantilla no puede generar documentos: ${validation?.criticalMissing?.join(', ') || validation?.error || 'estructura no válida'}`;
+    } else {
+      $('templateStatus').textContent='Plantilla base'; $('templateStatus').className='status-badge'; $('templateFileName').textContent='Se usa la plantilla base incluida';
+      if ($('templateValidationDetail')) $('templateValidationDetail').textContent='La plantilla base incluida será usada para Word, PDF y vista previa.';
+    }
     $('signatureStatus').textContent=signature?'Firma cargada':'Sin firma'; $('signatureStatus').className=`status-badge ${signature?'success':''}`; $('signatureFileName').textContent=signature?.name || 'Se insertará antes del coordinador SST';
     if (signature?.blob) { $('signaturePreview').classList.remove('hidden'); const url=URL.createObjectURL(signature.blob); $('signaturePreview').innerHTML=`<img src="${url}" alt="Firma">`; setTimeout(()=>URL.revokeObjectURL(url),1000); } else { $('signaturePreview').classList.add('hidden'); $('signaturePreview').innerHTML=''; }
   }
@@ -694,13 +842,43 @@
     const model=$('settingsGeminiModel').value.trim()||APP_CONFIG.defaultGeminiModel; const key=$('settingsGeminiKey').value.trim();
     await SSTDB.setSetting('aiEnabled',true); $('toggleAi').checked = true; $('toggleAi').disabled = true; await SSTDB.setSetting('geminiModel',model);
     if (!state.backendOnline||state.localMode) return toast('Preferencia local guardada','Conecta Apps Script para guardar la API key.','warn');
-    try { await SSTBackend.call('saveAiConfig',{model,apiKey:key}); $('settingsGeminiKey').value=''; toast('IA configurada','La clave quedó guardada en Script Properties, fuera de GitHub Pages.','success'); }
-    catch(error){toast('No se pudo guardar la IA',error.message,'error');}
+    try {
+      await SSTBackend.call('saveAiConfig',{model,apiKey:key});
+      $('settingsGeminiKey').value='';
+      const ready = await ensureAiReady({ notify:true });
+      if (ready) {
+        toast('IA configurada','Gemini está listo. Los PDF pendientes se auditarán automáticamente.','success');
+        await autoAuditPendingDocuments();
+      }
+    } catch(error){toast('No se pudo guardar la IA',error.message,'error');}
+  }
+
+  async function invalidateGeneratedOutputs(reason = 'La plantilla o firma cambió') {
+    if (!state.outputs.length) return;
+    await SSTDB.clear(SSTDB.stores.outputs);
+    state.outputs = [];
+    state.selectedOutputId = null;
+    for (const doc of state.documents) {
+      doc.dirty = true;
+      doc.updatedAt = new Date().toISOString();
+      await SSTDB.put(SSTDB.stores.documents, doc);
+    }
+    toast('Vistas previas invalidadas', `${reason}. Se regenerarán desde la plantilla activa, sin volver a analizar los PDF.`, 'warn', 7000);
   }
 
   async function uploadAsset(kind,file) {
-    if (!file) return; const buffer=await file.arrayBuffer(); const hash=await SSTUtils.sha256Bytes(buffer.slice(0)); const blob=new Blob([buffer],{type:file.type||'application/octet-stream'});
-    await SSTDB.put(SSTDB.stores.assets,{key:kind,name:file.name,mime:blob.type,blob,hash,updatedAt:new Date().toISOString(),shared:false});
+    if (!file) return;
+    const buffer=await file.arrayBuffer();
+    const hash=await SSTUtils.sha256Bytes(buffer.slice(0));
+    const blob=new Blob([buffer],{type:file.type||'application/octet-stream'});
+    let validation = null;
+    if (kind === 'template') {
+      validation = await SSTDocx.validateTemplate(buffer.slice(0));
+      if (!validation.valid) {
+        throw new Error(`Plantilla rechazada. Faltan marcadores obligatorios: ${validation.criticalMissing.join(', ')}`);
+      }
+    }
+    await SSTDB.put(SSTDB.stores.assets,{key:kind,name:file.name,mime:blob.type,blob,hash,validation,updatedAt:new Date().toISOString(),shared:false});
     let shared = false;
     if (state.backendOnline && !state.localMode && state.user?.role === 'admin') {
       try {
@@ -708,7 +886,8 @@
         const saved = await SSTDB.get(SSTDB.stores.assets,kind); saved.shared=true; await SSTDB.put(SSTDB.stores.assets,saved); shared=true;
       } catch (error) { toast('Recurso guardado solo en este navegador',error.message,'warn',6500); }
     }
-    await renderAssetSettings(); toast(kind==='template'?'Plantilla guardada':'Firma guardada',shared?`${file.name} · compartida con el equipo`:file.name,'success');
+    if (kind === 'template') await invalidateGeneratedOutputs('Se cargó una nueva plantilla institucional');
+    await renderAssetSettings(); toast(kind==='template'?'Plantilla validada y guardada':'Firma guardada',kind==='template'?`${file.name} · será usada en Word, PDF y vista previa${shared?' · compartida con el equipo':''}`:(shared?`${file.name} · compartida con el equipo`:file.name),'success');
   }
 
   function openOriginalModal(doc) {
@@ -721,30 +900,30 @@
     qsa('[data-auth-tab]').forEach((b)=>b.addEventListener('click',()=>switchAuthTab(b.dataset.authTab)));
     $('btnTestBackend').addEventListener('click',()=>saveBackendUrl('setupBackendUrl'));
     $('btnSaveBackend').addEventListener('click',async()=>{if(await saveBackendUrl('setupBackendUrl')) await showAuth();});
-    $('btnLocalMode').addEventListener('click',async()=>{state.localMode=true;state.user={name:'Revisión local',role:'local'};setBackendUi(false,'Modo local');await enterApp();toast('Modo local','Gemini y correo permanecerán desactivados hasta conectar Apps Script.','warn',6500);});
-    $('loginForm').addEventListener('submit',async(e)=>{e.preventDefault();try{const r=await SSTBackend.call('login',{username:$('loginUser').value,password:$('loginPassword').value});await SSTDB.setAuth('sessionToken',r.sessionToken);state.user=r.user;state.localMode=false;await enterApp();}catch(error){toast('Acceso rechazado',error.message,'error');}});
-    $('registerForm').addEventListener('submit',async(e)=>{e.preventDefault();try{const r=await SSTBackend.call('register',{name:$('registerName').value,username:$('registerUser').value,password:$('registerPassword').value});await SSTDB.setAuth('sessionToken',r.sessionToken);state.user=r.user;state.localMode=false;await enterApp();}catch(error){toast('No fue posible crear la cuenta',error.message,'error');}});
+    $('btnLocalMode').addEventListener('click',async()=>{await clearWorkspaceForNewSession();state.localMode=true;state.user={name:'Revisión local',role:'local'};setBackendUi(false,'Modo local');await enterApp();toast('Sesión local limpia','El espacio de trabajo anterior fue eliminado. IA y correo requieren Apps Script.','warn',6500);});
+    $('loginForm').addEventListener('submit',async(e)=>{e.preventDefault();try{const r=await SSTBackend.call('login',{username:$('loginUser').value,password:$('loginPassword').value});await SSTDB.setAuth('sessionToken',r.sessionToken);state.user=r.user;state.localMode=false;if(APP_CONFIG.clearWorkspaceOnExplicitLogin)await clearWorkspaceForNewSession();await enterApp();}catch(error){toast('Acceso rechazado',error.message,'error');}});
+    $('registerForm').addEventListener('submit',async(e)=>{e.preventDefault();try{const r=await SSTBackend.call('register',{name:$('registerName').value,username:$('registerUser').value,password:$('registerPassword').value});await SSTDB.setAuth('sessionToken',r.sessionToken);state.user=r.user;state.localMode=false;if(APP_CONFIG.clearWorkspaceOnExplicitLogin)await clearWorkspaceForNewSession();await enterApp();}catch(error){toast('No fue posible crear la cuenta',error.message,'error');}});
     $('passwordForm').addEventListener('submit',async(e)=>{e.preventDefault();try{await SSTBackend.call('changePasswordPublic',{username:$('passwordUser').value,oldPassword:$('passwordOld').value,newPassword:$('passwordNew').value});toast('Contraseña actualizada','Ya puedes iniciar sesión con la nueva clave.','success');switchAuthTab('login');}catch(error){toast('No se pudo cambiar la clave',error.message,'error');}});
     qsa('.nav-item[data-view]').forEach((b)=>b.addEventListener('click',()=>showView(b.dataset.view)));
     qsa('[data-go]').forEach((b)=>b.addEventListener('click',()=>showView(b.dataset.go)));
     $('btnSidebar').addEventListener('click',()=>$('sidebar').classList.toggle('open'));
-    $('btnLogout').addEventListener('click',async()=>{try{if(state.backendOnline&&!state.localMode)await SSTBackend.call('logout');}catch(_){}await SSTDB.setAuth('sessionToken','');state.user=null;state.localMode=false;await showAuth();});
+    $('btnLogout').addEventListener('click',async()=>{try{if(state.backendOnline&&!state.localMode)await SSTBackend.call('logout');}catch(_){}await SSTDB.setAuth('sessionToken','');await clearWorkspaceForNewSession();state.user=null;state.localMode=false;await showAuth();});
     const openFile=()=>$('pdfInput').click(); $('btnQuickUpload').addEventListener('click',()=>{showView('documents');openFile();}); $('btnUploadMain').addEventListener('click',openFile); $('dropZone').addEventListener('click',openFile); $('pdfInput').addEventListener('change',(e)=>{handleFiles(e.target.files);e.target.value='';});
     for(const type of ['dragenter','dragover'])$('dropZone').addEventListener(type,(e)=>{e.preventDefault();$('dropZone').classList.add('dragover');}); for(const type of ['dragleave','drop'])$('dropZone').addEventListener(type,(e)=>{e.preventDefault();$('dropZone').classList.remove('dragover');}); $('dropZone').addEventListener('drop',(e)=>handleFiles(e.dataTransfer.files));
-    $('documentSearch').addEventListener('input',renderDocumentList); $('documentList').addEventListener('click',async(e)=>{const del=e.target.closest('[data-delete-doc]');if(del){e.preventDefault();e.stopPropagation();await deleteDocumentById(del.dataset.deleteDoc);return;}const item=e.target.closest('[data-doc-id]');if(item){state.selectedDocId=item.dataset.docId;renderDocumentList();renderEditor();}}); $('recentDocuments').addEventListener('click',(e)=>{const item=e.target.closest('[data-dashboard-doc]');if(item){state.selectedDocId=item.dataset.dashboardDoc;showView('documents');renderDocumentList();renderEditor();}});
+    $('documentSearch').addEventListener('input',renderDocumentList); $('documentList').addEventListener('click',async(e)=>{const check=e.target.closest('.batch-select');if(check){e.stopPropagation();const id=check.dataset.batchId;check.checked?state.selectedBatchIds.add(id):state.selectedBatchIds.delete(id);renderBatchSelectionSummary();return;}const del=e.target.closest('[data-delete-doc]');if(del){e.preventDefault();e.stopPropagation();await deleteDocumentById(del.dataset.deleteDoc);return;}const item=e.target.closest('[data-doc-id]');if(item){state.selectedDocId=item.dataset.docId;renderDocumentList();renderEditor();}}); $('recentDocuments').addEventListener('click',(e)=>{const item=e.target.closest('[data-dashboard-doc]');if(item){state.selectedDocId=item.dataset.dashboardDoc;showView('documents');renderDocumentList();renderEditor();}});
     ['fieldName','fieldId','fieldEmail','fieldRole','fieldExamType','fieldDate','fieldPlace','fieldSurveillance','fieldObservations','fieldReferrals','fieldExams','fieldPending'].forEach((id)=>$(id).addEventListener('input',syncEditorToState));
-    $('recommendationGroups').addEventListener('input',syncEditorToState); $('recommendationGroups').addEventListener('click',(e)=>{if(e.target.classList.contains('remove-group')){e.target.closest('.recommendation-card').remove();syncEditorToState();}}); $('btnAddRecommendationGroup').addEventListener('click',()=>{const wrapper=document.createElement('div');wrapper.className='recommendation-card';wrapper.innerHTML='<div class="recommendation-card-head"><input class="rec-exam" value="Nuevo examen" aria-label="Examen"><button class="remove-group" type="button">×</button></div><textarea class="rec-text" rows="4" placeholder="Una recomendación por línea"></textarea>';$('recommendationGroups').appendChild(wrapper);wrapper.querySelector('.rec-exam').select();syncEditorToState();});
-    $('btnDeleteSelected').addEventListener('click',()=>{const d=selectedDocument();if(d)deleteDocumentById(d.id);else toast('Sin selección','Selecciona un certificado.','warn');}); $('btnValidateAiSelected').addEventListener('click',validateSelectedWithAi); $('btnReanalyzeSelected').addEventListener('click',reanalyzeSelected); $('btnGenerateSelected').addEventListener('click',generateSelected); $('btnGenerateAll').addEventListener('click',generateAll); $('btnGenerateAll2').addEventListener('click',generateAll); $('btnPreviewOriginal').addEventListener('click',()=>openOriginalModal(selectedDocument())); $('btnClearLoaded').addEventListener('click',clearLoadedDocuments);
+    $('recommendationGroups').addEventListener('input',syncEditorToState); $('recommendationGroups').addEventListener('click',(e)=>{if(e.target.classList.contains('remove-group')){e.target.closest('.recommendation-card').remove();syncEditorToState();}}); $('btnAddRecommendationGroup').addEventListener('click',()=>{const wrapper=document.createElement('div');wrapper.className='recommendation-card';wrapper.innerHTML='<div class="recommendation-card-head"><input class="rec-exam" value="Nuevo examen" aria-label="Examen"><button class="remove-group" type="button">×</button></div><textarea class="rec-text" rows="4" placeholder="Detalle completo del examen. Puedes separar hallazgos por línea; al generar se integrarán en un solo párrafo."></textarea>';$('recommendationGroups').appendChild(wrapper);wrapper.querySelector('.rec-exam').select();syncEditorToState();});
+    $('btnDeleteSelected').addEventListener('click',()=>{const d=selectedDocument();if(d)deleteDocumentById(d.id);else toast('Sin selección','Selecciona un certificado.','warn');}); $('btnValidateAiSelected').addEventListener('click',validateSelectedWithAi); $('btnGenerateSelected').addEventListener('click',generateSelected); $('btnGenerateSelectedBatch')?.addEventListener('click',generateSelectedBatch); $('btnGenerateAll').addEventListener('click',generateAll); $('btnGenerateAll2').addEventListener('click',generateAll); $('btnSelectAllDocs')?.addEventListener('click',()=>{state.documents.forEach((d)=>state.selectedBatchIds.add(d.id));renderDocumentList();}); $('btnClearDocSelection')?.addEventListener('click',()=>{state.selectedBatchIds.clear();renderDocumentList();}); $('btnPreviewOriginal').addEventListener('click',()=>openOriginalModal(selectedDocument())); $('btnClearLoaded').addEventListener('click',clearLoadedDocuments);
     $('originalList').addEventListener('click',async(e)=>{const del=e.target.closest('[data-delete-doc]');if(del){e.preventDefault();e.stopPropagation();await deleteDocumentById(del.dataset.deleteDoc);return;}const item=e.target.closest('[data-original-id]');if(item){state.selectedOriginalId=item.dataset.originalId;state.originalPage=1;renderOriginals();}}); $('btnPrevPage').addEventListener('click',()=>{if(state.originalPage>1){state.originalPage--;renderOriginals();}}); $('btnNextPage').addEventListener('click',()=>{const d=state.documents.find((x)=>x.id===state.selectedOriginalId);if(d&&state.originalPage<(d.pageCount||1)){state.originalPage++;renderOriginals();}}); $('btnDownloadOriginal').addEventListener('click',()=>{const d=state.documents.find((x)=>x.id===state.selectedOriginalId);if(d)SSTUtils.downloadBlob(d.blob,`ORIGINAL_${d.fileName}`);}); $('btnIndexOriginals').addEventListener('click',()=>{renderOriginals();toast('Índice actualizado',`${state.documents.length} PDF disponibles sin reprocesar.`,'success');});
     $('generatedList').addEventListener('click',(e)=>{const item=e.target.closest('[data-output-id]');if(item){state.selectedOutputId=item.dataset.outputId;renderGenerated();}}); $('btnDownloadGenerated').addEventListener('click',()=>{const o=selectedOutput();if(o)SSTUtils.downloadBlob(o.blob,o.filename);}); $('btnDownloadZip').addEventListener('click',async()=>{if(!state.outputs.length)return toast('Sin archivos','No hay documentos para comprimir.','warn');try{const zip=await SSTGenerator.makeZip(state.outputs);SSTUtils.downloadBlob(zip,`Lote_SST_JER_SA_${SSTUtils.todayIso().replaceAll('-','')}.zip`);}catch(e){toast('No se pudo crear el ZIP',e.message,'error');}});
     $('emailRecipients').addEventListener('input',(e)=>{if(e.target.matches('.email-to')){const id=e.target.dataset.emailTo,d=state.documents.find((x)=>x.id===id);if(d){d.data.correo=e.target.value.trim();d.updatedAt=new Date().toISOString();SSTDB.put(SSTDB.stores.documents,d);}}updateEmailPreview();}); $('emailRecipients').addEventListener('change',updateEmailPreview); $('emailSubject').addEventListener('input',updateEmailPreview); $('emailBody').addEventListener('input',updateEmailPreview); $('btnSelectAllEmail').addEventListener('click',()=>{qsa('.email-select').forEach((x)=>x.checked=true);updateEmailPreview();}); $('btnSendEmails').addEventListener('click',sendEmails);
     qsa('[data-control-tab]').forEach((b)=>b.addEventListener('click',()=>{state.controlTab=b.dataset.controlTab;qsa('[data-control-tab]').forEach((x)=>x.classList.toggle('active',x===b));renderControlTable();}));
-    $('btnSettingsTestBackend').addEventListener('click',()=>saveBackendUrl('settingsBackendUrl')); $('btnSettingsSaveBackend').addEventListener('click',async()=>{if(await saveBackendUrl('settingsBackendUrl'))await showAuthIfNeeded();}); $('btnSaveAi').addEventListener('click',saveAiSettings); $('btnRefreshConsecutive').addEventListener('click',refreshBackendDiagnostics); $('btnSaveConsecutive').addEventListener('click',saveConsecutiveSettings);
-    $('btnUploadTemplate').addEventListener('click',()=>$('templateInput').click()); $('templateInput').addEventListener('change',(e)=>{uploadAsset('template',e.target.files[0]);e.target.value='';}); $('btnRemoveTemplate').addEventListener('click',async()=>{await SSTDB.delete(SSTDB.stores.assets,'template');if(state.backendOnline&&!state.localMode&&state.user?.role==='admin'){try{await SSTBackend.call('removeSharedAsset',{kind:'template'});}catch(e){toast('Plantilla local eliminada',e.message,'warn');}}await renderAssetSettings();toast('Plantilla restaurada','Se utilizará la plantilla base incluida.','success');});
-    $('btnUploadSignature').addEventListener('click',()=>$('signatureInput').click()); $('signatureInput').addEventListener('change',(e)=>{uploadAsset('signature',e.target.files[0]);e.target.value='';}); $('btnRemoveSignature').addEventListener('click',async()=>{await SSTDB.delete(SSTDB.stores.assets,'signature');if(state.backendOnline&&!state.localMode&&state.user?.role==='admin'){try{await SSTBackend.call('removeSharedAsset',{kind:'signature'});}catch(e){toast('Firma local eliminada',e.message,'warn');}}await renderAssetSettings();toast('Firma eliminada','','success');});
+    $('btnSettingsTestBackend').addEventListener('click',()=>saveBackendUrl('settingsBackendUrl')); $('btnSettingsSaveBackend').addEventListener('click',async()=>{if(await saveBackendUrl('settingsBackendUrl'))await showAuthIfNeeded();}); $('btnSaveAi').addEventListener('click',saveAiSettings); $('btnTestAi')?.addEventListener('click',async()=>{const ready=await ensureAiReady({notify:true});if(ready){toast('IA lista','Gemini está autorizado. Se validarán automáticamente los PDF pendientes.','success');await autoAuditPendingDocuments();}}); $('btnRefreshConsecutive').addEventListener('click',refreshBackendDiagnostics); $('btnSaveConsecutive').addEventListener('click',saveConsecutiveSettings);
+    $('btnUploadTemplate').addEventListener('click',()=>$('templateInput').click()); $('templateInput').addEventListener('change',async(e)=>{try{await uploadAsset('template',e.target.files[0]);}catch(error){toast('Plantilla no válida',error.message,'error',8500);}finally{e.target.value='';}}); $('btnRemoveTemplate').addEventListener('click',async()=>{await SSTDB.delete(SSTDB.stores.assets,'template');if(state.backendOnline&&!state.localMode&&state.user?.role==='admin'){try{await SSTBackend.call('removeSharedAsset',{kind:'template'});}catch(e){toast('Plantilla local eliminada',e.message,'warn');}}await invalidateGeneratedOutputs('Se restauró la plantilla base');await renderAssetSettings();toast('Plantilla restaurada','Se utilizará la plantilla base incluida en todas las nuevas vistas previas.','success');});
+    $('btnUploadSignature').addEventListener('click',()=>$('signatureInput').click()); $('signatureInput').addEventListener('change',async(e)=>{try{await uploadAsset('signature',e.target.files[0]);}catch(error){toast('No se pudo guardar la firma',error.message,'error');}finally{e.target.value='';}}); $('btnRemoveSignature').addEventListener('click',async()=>{await SSTDB.delete(SSTDB.stores.assets,'signature');if(state.backendOnline&&!state.localMode&&state.user?.role==='admin'){try{await SSTBackend.call('removeSharedAsset',{kind:'signature'});}catch(e){toast('Firma local eliminada',e.message,'warn');}}await renderAssetSettings();toast('Firma eliminada','','success');});
     $('btnSavePreferences').addEventListener('click',async()=>{await SSTDB.setSetting('outputFormat',$('settingsOutputFormat').value);await SSTDB.setSetting('ocrEnabled',$('toggleOcr').checked);toast('Preferencias guardadas','Se aplicarán a las próximas cargas y generaciones.','success');renderDashboard();});
     $('btnChangePasswordLogged').addEventListener('click',async()=>{if(state.localMode)return toast('Modo local','No hay una cuenta remota que modificar.','warn');try{await SSTBackend.call('changePassword',{oldPassword:$('settingsOldPassword').value,newPassword:$('settingsNewPassword').value});$('settingsOldPassword').value='';$('settingsNewPassword').value='';toast('Contraseña actualizada','','success');}catch(e){toast('No se pudo cambiar la contraseña',e.message,'error');}});
-    $('btnClearLocalData').addEventListener('click',async()=>{if(!confirm('Esto eliminará PDF, salidas, plantilla, firma e historial almacenados en ESTE navegador. La cuenta y el backend no se eliminan. ¿Continuar?'))return;await SSTDB.clearAllLocalData();state.documents=[];state.outputs=[];state.emailHistory=[];state.selectedDocId=null;state.selectedOutputId=null;state.selectedOriginalId=null;await renderAll();await renderAssetSettings();toast('Caché local borrada','El portal quedó limpio en este navegador.','success');});
+    $('btnClearLocalData').addEventListener('click',async()=>{if(!confirm('Esto eliminará PDF, salidas, plantilla, firma e historial almacenados en ESTE navegador. La cuenta y el backend no se eliminan. ¿Continuar?'))return;await SSTDB.clearAllLocalData();state.documents=[];state.outputs=[];state.emailHistory=[];state.selectedDocId=null;state.selectedOutputId=null;state.selectedOriginalId=null;state.selectedBatchIds.clear();await renderAll();await renderAssetSettings();toast('Caché local borrada','El portal quedó limpio en este navegador.','success');});
   }
 
   async function showAuthIfNeeded(){ if(!state.user&&!state.localMode)await showAuth(); }

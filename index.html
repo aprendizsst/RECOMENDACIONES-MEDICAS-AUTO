@@ -174,7 +174,7 @@
                 <div><span>Parser clínico local</span><strong id="qualityParser">Listo</strong></div>
                 <div><span>OCR de respaldo</span><strong id="qualityOcr">Activo</strong></div>
                 <div><span>Validación Gemini</span><strong id="qualityGemini">Pendiente</strong></div>
-                <div><span>Caché IndexedDB</span><strong id="qualityCache">Activo</strong></div>
+                <div><span>Sesión de trabajo</span><strong id="qualityCache">Limpia al iniciar</strong></div>
               </div>
             </article>
           </div>
@@ -182,19 +182,20 @@
 
         <section class="view-section" data-view-panel="documents">
           <div class="toolbar-row">
-            <div><span class="eyebrow">INGESTA Y REVISIÓN</span><h2>Documentos</h2><p>Los PDF ya procesados se reutilizan automáticamente por huella digital.</p></div>
-            <div class="toolbar-actions"><button id="btnClearLoaded" class="btn danger">Eliminar cargados</button><button id="btnGenerateAll" class="btn secondary">Generar lote</button><button id="btnUploadMain" class="btn primary">＋ Cargar PDF</button></div>
+            <div><span class="eyebrow">INGESTA Y REVISIÓN</span><h2>Documentos</h2><p>Cada PDF se analiza una sola vez en la sesión, se valida automáticamente con IA y puede incluirse o excluirse del lote.</p></div>
+            <div class="toolbar-actions"><button id="btnClearLoaded" class="btn danger">Eliminar cargados</button><button id="btnGenerateSelectedBatch" class="btn secondary">Vista previa seleccionados</button><button id="btnGenerateAll" class="btn secondary">Vista previa de todo el lote</button><button id="btnUploadMain" class="btn primary">＋ Cargar PDF</button></div>
           </div>
 
           <input id="pdfInput" type="file" accept="application/pdf,.pdf" multiple hidden />
           <div id="dropZone" class="drop-zone">
-            <div class="drop-icon">⇧</div><div><strong>Arrastra aquí uno o varios certificados PDF</strong><span>o haz clic para seleccionarlos · se conservarán en el navegador</span></div>
+            <div class="drop-icon">⇧</div><div><strong>Arrastra aquí uno o varios certificados PDF</strong><span>o haz clic para seleccionarlos · IA automática + detección de los dos formatos</span></div>
           </div>
           <div id="processingBanner" class="processing-banner hidden"><div><span class="spinner"></span><div><strong id="processingTitle">Procesando documentos</strong><small id="processingDetail">Preparando motor…</small></div></div><div class="progress-track"><div id="processingProgress" class="progress-bar"></div></div></div>
 
           <div class="workspace-grid">
             <aside class="document-list-panel panel">
               <div class="panel-head"><div><span class="eyebrow">PERSONAS</span><h3>Certificados cargados</h3></div><span id="docListCount" class="count-badge">0</span></div>
+              <div class="selection-toolbar"><span id="selectedDocCount">0 seleccionados</span><div><button id="btnSelectAllDocs" class="link-button" type="button">Todos</button><button id="btnClearDocSelection" class="link-button" type="button">Ninguno</button></div></div>
               <div class="search-box"><span>⌕</span><input id="documentSearch" placeholder="Buscar por nombre, cédula o archivo…" /></div>
               <div id="documentList" class="document-list"><div class="empty-state compact"><span>▣</span><strong>Sin certificados</strong></div></div>
             </aside>
@@ -221,7 +222,7 @@
                 </div>
 
                 <div class="editor-section">
-                  <div class="section-head"><div><span class="section-number">2</span><div><strong>Recomendaciones por examen</strong><small>Revisa cada bloque antes de generar</small></div></div><button id="btnAddRecommendationGroup" class="btn ghost small">＋ Grupo</button></div>
+                  <div class="section-head"><div><span class="section-number">2</span><div><strong>Recomendaciones por examen</strong><small>La IA conserva el detalle completo. En la salida, cada examen queda en un único párrafo.</small></div></div><div class="section-actions"><span id="recommendationCoverage" class="status-badge">0 / 0 con detalle</span><button id="btnAddRecommendationGroup" class="btn ghost small">＋ Grupo</button></div></div>
                   <div id="recommendationGroups" class="recommendation-groups"></div>
                 </div>
 
@@ -234,7 +235,7 @@
 
                 <div class="editor-actions">
                   <div class="save-state" id="saveState">Cambios guardados automáticamente</div>
-                  <div><button id="btnDeleteSelected" class="btn danger">Eliminar archivo</button><button id="btnValidateAiSelected" class="btn secondary">✦ Validar con IA</button><button id="btnReanalyzeSelected" class="btn ghost">↻ Reanalizar</button><button id="btnPreviewOriginal" class="btn secondary">Ver PDF original</button><button id="btnGenerateSelected" class="btn primary">Generar vista previa</button></div>
+                  <div><button id="btnDeleteSelected" class="btn danger">Eliminar archivo</button><button id="btnValidateAiSelected" class="btn ghost">↻ Reintentar IA</button><button id="btnPreviewOriginal" class="btn secondary">Ver PDF original</button><button id="btnGenerateSelected" class="btn primary">Vista previa individual</button></div>
                 </div>
               </div>
             </section>
@@ -250,10 +251,10 @@
         </section>
 
         <section class="view-section" data-view-panel="generated">
-          <div class="toolbar-row"><div><span class="eyebrow">SALIDAS</span><h2>Documentos generados</h2><p>Todo lo generado permanece disponible al cambiar de persona.</p></div><div class="toolbar-actions"><button id="btnDownloadZip" class="btn secondary">Descargar ZIP</button><button id="btnGenerateAll2" class="btn primary">Generar / actualizar lote</button></div></div>
+          <div class="toolbar-row"><div><span class="eyebrow">SALIDAS</span><h2>Documentos generados</h2><p>Las vistas previas se generan exclusivamente desde la plantilla institucional activa.</p></div><div class="toolbar-actions"><button id="btnDownloadZip" class="btn secondary">Descargar ZIP</button><button id="btnGenerateAll2" class="btn primary">Vista previa de todo el lote</button></div></div>
           <div class="viewer-grid generated-grid">
             <aside class="panel"><div class="panel-head"><div><span class="eyebrow">PAQUETE</span><h3>Archivos listos</h3></div><span id="generatedCount" class="count-badge">0</span></div><div id="generatedList" class="document-list"></div></aside>
-            <section class="panel viewer-panel"><div class="viewer-toolbar"><div><strong id="generatedViewerTitle">Selecciona un documento</strong><small id="generatedViewerMeta">—</small></div><div><button id="btnDownloadGenerated" class="btn primary small">Descargar</button></div></div><div id="generatedPreview" class="generated-preview"><div class="empty-state tall"><span>⇩</span><strong>Aún no hay vista previa</strong><p>Genera un documento desde la sección Documentos.</p></div></div></section>
+            <section class="panel viewer-panel"><div class="viewer-toolbar"><div><strong id="generatedViewerTitle">Selecciona un documento</strong><small id="generatedViewerMeta">—</small></div><div><button id="btnDownloadGenerated" class="btn primary small">Descargar</button></div></div><div id="generatedPreview" class="generated-preview"><div class="empty-state tall"><span>⇩</span><strong>Aún no hay vista previa</strong><p>Selecciona uno o varios certificados y genera su vista previa desde la plantilla institucional.</p></div></div></section>
           </div>
         </section>
 
@@ -298,9 +299,9 @@
 
             <section class="panel"><div class="panel-head"><div><span class="eyebrow">CONSECUTIVOS</span><h3>Google Sheets</h3></div><span id="consecutiveStatusBadge" class="status-badge">Consultando</span></div><label><span>URL o ID de la hoja de cálculo</span><input id="settingsConsecutiveSpreadsheet" placeholder="https://docs.google.com/spreadsheets/d/.../edit" /></label><label><span>Nombre de la pestaña</span><input id="settingsConsecutiveSheet" value="Consecutivos" /></label><label><span>Prefijo</span><input id="settingsConsecutivePrefix" value="SST" maxlength="16" /></label><div class="button-row"><button id="btnRefreshConsecutive" class="btn secondary">Consultar actual</button><button id="btnSaveConsecutive" class="btn primary">Guardar y validar</button></div><p id="consecutiveStatusDetail" class="help-text">El backend lee el mayor consecutivo directamente desde Sheets y usa bloqueo para evitar duplicados.</p></section>
 
-            <section class="panel"><div class="panel-head"><div><span class="eyebrow">INTELIGENCIA ARTIFICIAL</span><h3>Gemini</h3></div></div><label class="switch-row"><div><strong>Validación visual automática</strong><small>Siempre activa: cada PDF se audita con Gemini al cargarlo y los pendientes se validan al abrir el portal.</small></div><input id="toggleAi" type="checkbox" checked disabled /></label><label><span>Modelo</span><input id="settingsGeminiModel" /></label><label><span>API key de Gemini</span><input id="settingsGeminiKey" type="password" placeholder="Déjala vacía para conservar la guardada" /></label><button id="btnSaveAi" class="btn primary full">Guardar configuración de IA</button></section>
+            <section class="panel"><div class="panel-head"><div><span class="eyebrow">INTELIGENCIA ARTIFICIAL</span><h3>Gemini</h3></div><span id="aiStatusBadge" class="status-badge warn">Comprobando</span></div><label class="switch-row"><div><strong>Validación visual automática</strong><small>Obligatoria: cada PDF se audita con Gemini al cargarlo. La generación se bloquea si la IA no terminó correctamente.</small></div><input id="toggleAi" type="checkbox" checked disabled /></label><p id="aiStatusDetail" class="help-text">Comprobando autorización y modelo…</p><label><span>Modelo</span><input id="settingsGeminiModel" /></label><label><span>API key de Gemini</span><input id="settingsGeminiKey" type="password" placeholder="Déjala vacía para conservar la guardada" /></label><div class="button-row"><button id="btnTestAi" class="btn secondary">Probar IA y validar pendientes</button><button id="btnSaveAi" class="btn primary">Guardar configuración</button></div></section>
 
-            <section class="panel"><div class="panel-head"><div><span class="eyebrow">DOCUMENTO INSTITUCIONAL</span><h3>Plantilla Word</h3></div><span id="templateStatus" class="status-badge">Plantilla base</span></div><input id="templateInput" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden /><button id="btnUploadTemplate" class="upload-card"><span>W</span><div><strong>Cargar plantilla .docx</strong><small id="templateFileName">Se usa la plantilla base incluida</small></div></button><div class="button-row"><button id="btnRemoveTemplate" class="btn ghost">Restaurar base</button></div><p class="help-text">Se reconocen los mismos marcadores del proyecto Streamlit: <code>{{NOMBRE DE LA PERSONA}}</code>, <code>{{LISTA DE EXAMENES REALIZADOS}}</code>, <code>{{Recomendaciones médicas}}</code>, etc.</p></section>
+            <section class="panel"><div class="panel-head"><div><span class="eyebrow">DOCUMENTO INSTITUCIONAL</span><h3>Plantilla Word</h3></div><span id="templateStatus" class="status-badge">Plantilla base</span></div><input id="templateInput" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden /><button id="btnUploadTemplate" class="upload-card"><span>W</span><div><strong>Cargar plantilla .docx</strong><small id="templateFileName">Se usa la plantilla base incluida</small></div></button><div class="button-row"><button id="btnRemoveTemplate" class="btn ghost">Restaurar base</button></div><p class="help-text">Se reconocen los mismos marcadores del proyecto Streamlit: <code>{{NOMBRE DE LA PERSONA}}</code>, <code>{{LISTA DE EXAMENES REALIZADOS}}</code>, <code>{{Recomendaciones médicas}}</code>, etc.</p><p id="templateValidationDetail" class="help-text">La plantilla activa es la única fuente visual para Word, PDF y vista previa. Si cambia, las vistas anteriores se invalidan automáticamente.</p></section>
 
             <section class="panel"><div class="panel-head"><div><span class="eyebrow">FIRMA</span><h3>Firma autorizada</h3></div><span id="signatureStatus" class="status-badge">Sin firma</span></div><input id="signatureInput" type="file" accept="image/png,image/jpeg" hidden /><button id="btnUploadSignature" class="upload-card"><span>✎</span><div><strong>Cargar firma PNG/JPG</strong><small id="signatureFileName">Se insertará antes del coordinador SST</small></div></button><div id="signaturePreview" class="signature-preview hidden"></div><button id="btnRemoveSignature" class="btn ghost">Quitar firma</button></section>
 
@@ -322,14 +323,14 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script src="https://cdn.jsdelivr.net/pyodide/v0.27.7/full/pyodide.js"></script>
-  <script src="js/config.js?v=20260820-5"></script>
-  <script src="js/utils.js?v=20260820-5"></script>
-  <script src="js/db.js?v=20260820-5"></script>
-  <script src="js/backend.js?v=20260820-5"></script>
-  <script src="js/parser-bridge.js?v=20260820-5"></script>
-  <script src="js/pdf-service.js?v=20260820-5"></script>
-  <script src="js/docx-engine.js?v=20260820-5"></script>
-  <script src="js/generator.js?v=20260820-5"></script>
-  <script src="js/app.js?v=20260820-5"></script>
+  <script src="js/config.js?v=20260826-7"></script>
+  <script src="js/utils.js?v=20260826-7"></script>
+  <script src="js/db.js?v=20260826-7"></script>
+  <script src="js/backend.js?v=20260826-7"></script>
+  <script src="js/parser-bridge.js?v=20260826-7"></script>
+  <script src="js/pdf-service.js?v=20260826-7"></script>
+  <script src="js/docx-engine.js?v=20260826-7"></script>
+  <script src="js/generator.js?v=20260826-7"></script>
+  <script src="js/app.js?v=20260826-7"></script>
 </body>
 </html>

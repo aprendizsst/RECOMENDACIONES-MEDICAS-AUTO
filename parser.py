@@ -2216,3 +2216,161 @@ def fusionar_json(datos_locales_json, datos_ia_json, texto_fuente):
     if isinstance(datos.get("fecha"), (datetime.date, datetime.datetime)):
         datos["fecha"] = datos["fecha"].isoformat()
     return json.dumps(datos, ensure_ascii=False)
+
+# -----------------------------------------------------------------------------
+# Motor clínico V7: doble formato + enriquecimiento conservador por examen.
+# Objetivos:
+# - conservar íntegro el detalle de recomendaciones;
+# - mapear recomendaciones generales al examen solo cuando hay evidencia semántica fuerte;
+# - mantener generales las recomendaciones transversales;
+# - garantizar una entrada para cada examen realizado.
+# -----------------------------------------------------------------------------
+
+_ANALIZAR_PDF_V6 = analizar_pdf_inteligente
+_FUSIONAR_IA_V6 = fusionar_validacion_ia
+
+_SEMANTICA_EXAMEN_V7 = {
+    "OPTOMETRIA": {
+        "strong": ["OPTOMETR", "EXAMEN VISUAL", "CONTROL VISUAL", "AGUDEZA VISUAL", "RX OPTICA", "CORRECCION OPTICA", "CORRECCIÓN ÓPTICA", "GAFAS", "ASTIGMAT", "PRESBIC", "VISION", "VISIÓN"],
+        "weak": ["VISUAL", "OCULAR", "OPTICA", "ÓPTICA"]
+    },
+    "AUDIOMETRIA": {
+        "strong": ["AUDIOMETR", "PROTECCION AUDITIVA", "PROTECCIÓN AUDITIVA", "CONTROL AUDITIVO", "HIPOACUS", "AUDITIV"],
+        "weak": ["RUIDO", "OIDO", "OÍDO"]
+    },
+    "ESPIROMETRIA": {
+        "strong": ["ESPIROMETR", "CONTROL RESPIRATORIO", "VALORACION RESPIRATORIA", "VALORACIÓN RESPIRATORIA"],
+        "weak": ["RESPIRATOR", "PULMON", "PULMÓN"]
+    },
+    "OSTEOMUSCULAR": {
+        "strong": ["OSTEOMUSC", "MUSCULOESQUELET", "ORTOPEDIA", "HIGIENE POSTURAL", "ERGONOMIC", "ERGONÓMIC", "FORTALECIMIENTO DE ESPALDA", "PAUSAS ACTIVAS"],
+        "weak": ["ESPALDA", "POSTURAL", "COLUMNA", "ARTICULAR", "MUSCULAR"]
+    },
+    "ELECTROCARDIOGRAMA": {
+        "strong": ["ELECTROCARDIO", "CONTROL CARDIOLOG", "VALORACION CARDIOLOG", "VALORACIÓN CARDIOLOG"],
+        "weak": ["CARDIOVASCULAR", "CARDIACO", "CARDÍACO", "RITMO CARDIACO", "RITMO CARDÍACO"]
+    },
+    "GLICEMIA": {
+        "strong": ["GLICEM", "GLUCOSA"],
+        "weak": []
+    },
+    "PERFIL LIPIDICO": {
+        "strong": ["PERFIL LIPID", "COLESTEROL", "TRIGLICER"],
+        "weak": []
+    },
+}
+
+_RECOMENDACIONES_TRANSVERSALES_V7 = [
+    "USO DE EPP", "EPP", "HABITOS SALUDABLES", "HÁBITOS SALUDABLES",
+    "CONTROL DE PESO", "HACER DEPORTE", "DIETA BALANCEADA", "ACTIVIDAD FISICA",
+    "ACTIVIDAD FÍSICA", "ALIMENTACION SALUDABLE", "ALIMENTACIÓN SALUDABLE"
+]
+
+
+def _familia_examen_v7(examen):
+    n = normalizar_etiqueta(examen)
+    if "OPTOMETR" in n or "VISUAL" in n: return "OPTOMETRIA"
+    if "AUDIOMETR" in n or "AUDITIV" in n: return "AUDIOMETRIA"
+    if "ESPIROMETR" in n or "RESPIRATOR" in n: return "ESPIROMETRIA"
+    if any(x in n for x in ["OSTEOMUSC", "MUSCULOESQUELET", "ENFASIS OSTEOMUSCULAR", "ÉNFASIS OSTEOMUSCULAR"]): return "OSTEOMUSCULAR"
+    if "ELECTROCARD" in n or "CARDIO" in n: return "ELECTROCARDIOGRAMA"
+    if "GLICEM" in n: return "GLICEMIA"
+    if "LIPID" in n: return "PERFIL LIPIDICO"
+    return ""
+
+
+def _recomendacion_transversal_v7(recomendacion):
+    n = normalizar_etiqueta(recomendacion)
+    if not n: return True
+    return any(n == normalizar_etiqueta(x) or n.startswith(normalizar_etiqueta(x) + " ") for x in _RECOMENDACIONES_TRANSVERSALES_V7)
+
+
+def _puntaje_semantico_examen_v7(recomendacion, examen):
+    n = normalizar_etiqueta(recomendacion)
+    familia = _familia_examen_v7(examen)
+    if not n or not familia or _recomendacion_transversal_v7(recomendacion):
+        return 0
+    cfg = _SEMANTICA_EXAMEN_V7.get(familia, {})
+    score = 0
+    strong_hits = sum(1 for k in cfg.get("strong", []) if normalizar_etiqueta(k) in n)
+    weak_hits = sum(1 for k in cfg.get("weak", []) if normalizar_etiqueta(k) in n)
+    score += strong_hits * 4 + weak_hits
+    # Una mención literal del nombre/familia del examen es evidencia fuerte.
+    ex_norm = normalizar_etiqueta(examen)
+    if ex_norm and ex_norm in n:
+        score += 5
+    # Evita que una simple recomendación transversal se enrute por una palabra secundaria.
+    if len(n.split()) <= 3 and not strong_hits:
+        score = 0
+    return score
+
+
+def enriquecer_recomendaciones_por_examen_v7(datos, texto_fuente=""):
+    datos = dict(datos or {})
+    examenes = normalizar_lista_clinica(datos.get("examenes_lista", []) or [])
+    mapa = agrupar_recomendaciones_por_examen(
+        examenes,
+        datos.get("recomendaciones_lista", []) or [],
+        datos.get("recomendaciones_por_examen", {}) or {}
+    )
+    generales = list(mapa.get("Recomendaciones generales", []) or [])
+    mapa.pop("Recomendaciones generales", None)
+    for examen in examenes:
+        mapa.setdefault(examen, [])
+
+    generales_restantes = []
+    asociaciones = []
+    for rec in generales:
+        puntuados = sorted(
+            [(_puntaje_semantico_examen_v7(rec, examen), examen) for examen in examenes],
+            key=lambda x: x[0], reverse=True
+        )
+        mejor_score, mejor_examen = puntuados[0] if puntuados else (0, "")
+        segundo_score = puntuados[1][0] if len(puntuados) > 1 else 0
+        # Umbral alto y margen frente al segundo candidato: evita asociaciones ambiguas.
+        if mejor_score >= 4 and mejor_score >= segundo_score + 2:
+            mapa.setdefault(mejor_examen, []).append(rec)
+            asociaciones.append({"examen": mejor_examen, "recomendacion": rec, "fuente": "semantica_documental", "puntaje": mejor_score})
+        else:
+            generales_restantes.append(rec)
+
+    # Deduplicación final sin resumir ni reescribir el contenido.
+    for examen in list(mapa):
+        mapa[examen] = normalizar_lista_clinica(deduplicar_textos(mapa[examen]), cerrar_con_punto=True)
+    if generales_restantes:
+        mapa["Recomendaciones generales"] = normalizar_lista_clinica(deduplicar_textos(generales_restantes), cerrar_con_punto=True)
+
+    datos["recomendaciones_por_examen"] = mapa
+    datos["recomendaciones_lista"] = aplanar_recomendaciones_por_examen(mapa)
+    datos["asociaciones_recomendaciones_v7"] = asociaciones
+    datos["cobertura_recomendaciones"] = {
+        "examenes": len(examenes),
+        "con_recomendacion": sum(1 for examen in examenes if mapa.get(examen)),
+        "generales": len(mapa.get("Recomendaciones generales", []) or [])
+    }
+    return datos
+
+
+def analizar_pdf_inteligente(texto, metadatos_pdf=None):
+    datos = _ANALIZAR_PDF_V6(texto, metadatos_pdf)
+    datos = enriquecer_recomendaciones_por_examen_v7(datos, texto)
+    datos["modo_validacion"] = "Motor clínico V7 · doble formato + relaciones por examen"
+    # V7 no considera un examen sin recomendación como error por sí solo, pero sí conserva
+    # cualquier alerta estructural real detectada por el motor anterior.
+    calidad, campos = evaluar_calidad_extraccion(datos, texto)
+    datos["calidad_extraccion"] = calidad
+    datos["campos_revision"] = campos
+    return datos
+
+
+def fusionar_validacion_ia(datos_locales, datos_ia, texto_fuente):
+    # La fusión V6 sigue siendo la barrera contra alucinaciones. V7 añade luego un
+    # enrutamiento semántico conservador sobre recomendaciones generales verificadas.
+    resultado = _FUSIONAR_IA_V6(datos_locales, datos_ia, texto_fuente)
+    resultado = enriquecer_recomendaciones_por_examen_v7(resultado, texto_fuente)
+    resultado["validado_ia"] = True
+    resultado["modo_validacion"] = "IA visual V7 auditada + motor clínico de doble formato"
+    calidad, campos = evaluar_calidad_extraccion(resultado, texto_fuente)
+    resultado["calidad_extraccion"] = calidad
+    resultado["campos_revision"] = campos
+    return resultado

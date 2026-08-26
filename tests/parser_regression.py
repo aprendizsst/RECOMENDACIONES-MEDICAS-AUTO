@@ -72,8 +72,11 @@ def test_formato_a():
     generales = d['recomendaciones_por_examen'].get('Recomendaciones generales', [])
     for rec in ['Uso de EPP', 'Control de peso', 'Hacer deporte', 'Dieta balanceada']:
         assert_contains(generales, rec)
-    # La mención interna «control anual por optometría» NO debe mover la recomendación al examen.
-    assert not d['recomendaciones_por_examen'].get('Optometría')
+    # V7 asocia por semántica fuerte las recomendaciones visuales y osteomusculares, sin mover transversales.
+    assert_contains(d['recomendaciones_por_examen'].get('Optometría', []), 'Examen visual de control en un año')
+    assert_contains(d['recomendaciones_por_examen'].get('Optometría', []), 'Astigmatismo')
+    assert_contains(d['recomendaciones_por_examen'].get('Énfasis osteomuscular', []), 'ortopedia')
+    assert_contains(d['recomendaciones_por_examen'].get('Énfasis osteomuscular', []), 'Pausas activas e higiene postural')
     assert 'visual' in d['vigilancia_programa'].lower()
     assert d['observaciones'].lower().startswith('ninguna')
     assert d['remisiones'].lower() == 'no'
@@ -105,7 +108,8 @@ def test_ai_does_not_relocate_or_invent():
         'evidencias':{'recomendaciones':['CONTROL DE PESO'],'observaciones':'NO APLICA','remisiones':'','vigilancia_programa':'SVE VISUAL'}
     }
     fused = p.fusionar_validacion_ia(local, fake_ai, FORMATO_A)
-    assert not fused['recomendaciones_por_examen'].get('Optometría')
+    assert_contains(fused['recomendaciones_por_examen'].get('Optometría', []), 'Examen visual de control en un año')
+    assert 'control de peso' not in ' '.join(fused['recomendaciones_por_examen'].get('Optometría', [])).lower()
     assert 'tomar mucha agua' not in ' '.join(fused['recomendaciones_lista']).lower()
     assert 'auditiva' not in fused['vigilancia_programa'].lower()
 
@@ -114,4 +118,4 @@ if __name__ == '__main__':
     test_formato_a()
     test_formato_b()
     test_ai_does_not_relocate_or_invent()
-    print('OK · regresiones V6 superadas')
+    print('OK · regresiones V7 doble formato superadas')

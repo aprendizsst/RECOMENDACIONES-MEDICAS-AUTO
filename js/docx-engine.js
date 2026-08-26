@@ -67,6 +67,143 @@
   function serializeXml(doc) { return new XMLSerializer().serializeToString(doc); }
 
   class DocxEngine {
+    constructor() {
+      this.engineVersion = '2026-08-26.7-template-first';
+      this.criticalMarkers = [
+        '{{NUMERO DE CONSECUTIVO}}',
+        '{{NOMBRE DE LA PERSONA}}',
+        '{{TIPO DE EXAMEN}}',
+        '{{LISTA DE EXAMENES REALIZADOS}}',
+        '{{Recomendaciones médicas}}'
+      ];
+      this.recommendedMarkers = [
+        '{{LUGAR}}','{{FECHA HOY}}','{{CARGO DE LA PERSONA}}',
+        '{{Programa de vigilancia epidemiológica}}','{{Observaciones}}','{{Remisiones}}'
+      ];
+    }
+
+    async _templateText(templateBuffer) {
+      const zip = await JSZip.loadAsync(templateBuffer);
+      const names = Object.keys(zip.files).filter((name) => /^word\/(document|header\d+|footer\d+)\.xml$/i.test(name));
+      if (!names.includes('word/document.xml')) throw new Error('La plantilla no contiene word/document.xml.');
+      const chunks = [];
+      for (const name of names) {
+        const xml = await zip.file(name).async('string');
+        const doc = parseXml(xml);
+        const paragraphs = [...doc.getElementsByTagNameNS(WNS, 'p')];
+        chunks.push(paragraphs.map(pText).join('\n'));
+      }
+      return chunks.join('\n');
+    }
+
+    async validateTemplate(templateBuffer) {
+      let text;
+      try { text = await this._templateText(templateBuffer); }
+      catch (error) { return { valid:false, criticalMissing:this.criticalMarkers.slice(), recommendedMissing:this.recommendedMarkers.slice(), found:[], error:error.message }; }
+      const found = [...this.criticalMarkers, ...this.recommendedMarkers].filter((m) => text.includes(m));
+      const criticalMissing = this.criticalMarkers.filter((m) => !text.includes(m));
+      const recommendedMissing = this.recommendedMarkers.filter((m) => !text.includes(m));
+      return { valid:criticalMissing.length === 0, criticalMissing, recommendedMissing, found, markerCount:found.length, totalMarkers:this.criticalMarkers.length + this.recommendedMarkers.length };
+    }
+
+    async _loadScript(check, urls, label) {
+      if (check()) return;
+      let lastError = null;
+      for (const src of urls) {
+        try {
+          await new Promise((resolve, reject) => {
+            const existing = [...document.scripts].find((x) => x.src === src);
+            if (existing && check()) return resolve();
+            const script = existing || document.createElement('script');
+            const timer = setTimeout(() => reject(new Error(`Tiempo agotado cargando ${label}`)), 18000);
+            script.onload = () => { clearTimeout(timer); check() ? resolve() : reject(new Error(`${label} cargó sin exponer su API.`)); };
+            script.onerror = () => { clearTimeout(timer); reject(new Error(`No se pudo cargar ${label} desde ${src}`)); };
+            if (!existing) { script.src = src; script.async = true; script.crossOrigin = 'anonymous'; document.head.appendChild(script); }
+          });
+          if (check()) return;
+        } catch (error) { lastError = error; }
+      }
+      throw lastError || new Error(`No se pudo cargar ${label}.`);
+    }
+
+    async ensurePreviewRenderer() {
+      await this._loadScript(
+        () => !!window.docx?.renderAsync,
+        [
+          'https://unpkg.com/docx-preview@0.4.0/dist/docx-preview.min.js',
+          'https://cdn.jsdelivr.net/npm/docx-preview@0.4.0/dist/docx-preview.min.js'
+        ],
+        'docx-preview'
+      );
+      return window.docx;
+    }
+
+    async ensureHtml2Pdf() {
+      await this._loadScript(
+        () => typeof window.html2pdf === 'function',
+        [
+          'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js',
+          'https://unpkg.com/html2pdf.js@0.10.1/dist/html2pdf.bundle.min.js'
+        ],
+        'html2pdf'
+      );
+      return window.html2pdf;
+    }
+
+    async renderGeneratedDocx(docxBuffer, bodyContainer, styleContainer = null) {
+      const renderer = await this.ensurePreviewRenderer();
+      bodyContainer.innerHTML = '';
+      if (styleContainer) styleContainer.innerHTML = '';
+      await renderer.renderAsync(docxBuffer, bodyContainer, styleContainer || bodyContainer, {
+        className:'sst-docx',
+        inWrapper:true,
+        breakPages:true,
+        ignoreWidth:false,
+        ignoreHeight:false,
+        ignoreFonts:false,
+        renderHeaders:true,
+        renderFooters:true,
+        renderFootnotes:true,
+        renderEndnotes:true,
+        useBase64URL:true,
+        experimental:true
+      });
+    }
+
+    async toHtml(docxBuffer) {
+      const host = document.createElement('div');
+      const styles = document.createElement('div');
+      const body = document.createElement('div');
+      host.appendChild(styles); host.appendChild(body);
+      await this.renderGeneratedDocx(docxBuffer, body, styles);
+      return `<!doctype html><html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">${styles.innerHTML}<style>html,body{margin:0;background:#e9eef5}body{padding:20px}.sst-docx-wrapper{margin:auto}</style></head><body>${body.innerHTML}</body></html>`;
+    }
+
+    async toPdf(docxBuffer) {
+      await this.ensurePreviewRenderer();
+      const html2pdf = await this.ensureHtml2Pdf();
+      const host = document.createElement('div');
+      host.setAttribute('aria-hidden','true');
+      Object.assign(host.style, { position:'fixed', left:'-100000px', top:'0', width:'816px', background:'#fff', zIndex:'-9999', pointerEvents:'none' });
+      const styles = document.createElement('div');
+      const body = document.createElement('div');
+      host.appendChild(styles); host.appendChild(body); document.body.appendChild(host);
+      try {
+        await this.renderGeneratedDocx(docxBuffer, body, styles);
+        await new Promise((resolve) => setTimeout(resolve, 180));
+        const worker = html2pdf().set({
+          margin:0,
+          image:{type:'jpeg',quality:0.98},
+          html2canvas:{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'},
+          jsPDF:{unit:'mm',format:'a4',orientation:'portrait'},
+          pagebreak:{mode:['css','legacy']}
+        }).from(body).toPdf();
+        const blob = await worker.outputPdf('blob');
+        if (!blob || !blob.size) throw new Error('El conversor devolvió un PDF vacío.');
+        return blob;
+      } finally { host.remove(); }
+    }
+
     async loadDefaultTemplate() {
       const response = await fetch('assets/default-template.docx');
       if (!response.ok) throw new Error('No se encontró la plantilla base incluida.');
@@ -121,8 +258,17 @@
           if (!entries.length) lines.push('Ninguna.');
           for (const [exam, recs] of entries) {
             lines.push({ text: `${exam}:`, bold: true });
-            if (Array.isArray(recs) && recs.length) for (const rec of recs) lines.push(`• ${rec}`);
-            else lines.push({ text: 'Sin recomendación específica registrada en el certificado.', italic: true });
+            if (Array.isArray(recs) && recs.length) {
+              // V7: las recomendaciones de un mismo examen se presentan como un solo
+              // párrafo continuo. Las viñetas se reservan exclusivamente para exámenes.
+              const paragraph = recs.map((rec) => {
+                const clean = String(rec || '').replace(/^[•\-–—]+\s*/, '').trim();
+                return clean && !/[.!?]$/.test(clean) ? `${clean}.` : clean;
+              }).filter(Boolean).join(' ');
+              lines.push(paragraph || 'Sin recomendación específica registrada en el certificado.');
+            } else {
+              lines.push({ text: 'Sin recomendación específica registrada en el certificado.', italic: true });
+            }
           }
           replaceParagraphWithLines(doc, p, lines);
           continue;
@@ -144,6 +290,23 @@
       }
 
       zip.file('word/document.xml', serializeXml(doc));
+
+      // También reemplaza marcadores simples ubicados en encabezados o pies.
+      const secondaryParts = Object.keys(zip.files).filter((name) => /^word\/(header\d+|footer\d+)\.xml$/i.test(name));
+      for (const partName of secondaryParts) {
+        const partDoc = parseXml(await zip.file(partName).async('string'));
+        const partParagraphs = [...partDoc.getElementsByTagNameNS(WNS, 'p')];
+        for (const p2 of partParagraphs) {
+          const original2 = pText(p2);
+          let replaced2 = original2; let changed2 = false;
+          for (const [key, value] of Object.entries(simple)) {
+            if (replaced2.includes(key)) { replaced2 = replaced2.split(key).join(String(value)); changed2 = true; }
+          }
+          if (changed2) setPText(partDoc, p2, replaced2);
+        }
+        zip.file(partName, serializeXml(partDoc));
+      }
+
       if (signatureAsset?.blob) await this._insertSignature(zip, signatureAsset.blob);
       return zip.generateAsync({ type: 'arraybuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
     }
