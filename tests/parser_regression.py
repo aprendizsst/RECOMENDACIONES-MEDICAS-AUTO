@@ -119,3 +119,35 @@ if __name__ == '__main__':
     test_formato_b()
     test_ai_does_not_relocate_or_invent()
     print('OK · regresiones V7 doble formato superadas')
+
+# Regresión V8: algunos PDF.js entregan la fila visual completa sin tabulación.
+FORMATO_B_SIN_COLUMNAS = '''EXÁMENES DE DIAGNÓSTICO LABORAL REALIZADOS - RECOMENDACIONES.
+OPTOMETRIA CONTROL ANUAL // CONTINUAR USO PERMANENTE DE RX OPTICA // PAUSAS ACTIVAS VISUALES
+EXAMEN MEDICO OCUPACIONAL CONTINUAR CON USO ADECUADO DE ELEMENTOS DE PROTECCION PERSONAL, SEGUIR PAUTAS DE HIGIENE POSTURAL, REALIZAR PAUSAS ACTIVAS DE 5
+MINUTOS POR LO MENOS CADA 2 HORAS, AUTORREGULADAS, HÁBITOS DE VIDA SALUDABLE, EN LO POSIBLE REALIZAR ACTIVIDAD FÍSICA REGULAR
+ENFASIS OSTEOMUSCULAR REALIZADO
+CONCEPTO LABORAL
+Observaciones CONTROL POR EAPB, CONTROL DE PESO, VALORACION POR NUTRICION. PAUTAS ERGONOMICAS EN EL PUESTO DE TRABAJO. USO DE CORRECCION OPTICA PERMANENTE CON FILTROS PARA PROTECCION VISUAL
+Ingresar al Programa de Vigilancia
+Epidemiológica o Programa de Prevención y Promoción
+VISUAL SVE
+Información de Remisiones NUTRICION
+MEDICINA GENERAL EPS
+'''
+
+
+def test_formato_b_sin_columnas_v8():
+    d = p.analizar_pdf_inteligente(FORMATO_B_SIN_COLUMNAS)
+    assert_contains(d['recomendaciones_por_examen']['Optometría'], 'CONTROL ANUAL')
+    assert_contains(d['recomendaciones_por_examen']['Optometría'], 'RX óptica')
+    assert_contains(d['recomendaciones_por_examen']['Examen clínico ocupacional'], 'elementos de protección personal')
+    assert_contains(d['recomendaciones_por_examen']['Examen clínico ocupacional'], 'CADA 2 HORAS')
+    assert d.get('estado_por_examen', {}).get('Énfasis osteomuscular') == 'Realizado'
+    assert 'control por eapb' in d['observaciones'].lower()
+    assert 'visual' in d['vigilancia_programa'].lower()
+    assert 'nutricion' in d['remisiones'].lower()
+    assert 'medicina general eps' in d['remisiones'].lower()
+
+
+if __name__ == '__main__':
+    test_formato_b_sin_columnas_v8()

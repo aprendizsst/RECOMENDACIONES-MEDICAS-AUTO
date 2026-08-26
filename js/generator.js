@@ -1,5 +1,5 @@
 (() => {
-  const OUTPUT_FIELDS = ['nombre','cargo','tipo_examen','identificacion','examenes_lista','recomendaciones_por_examen','recomendaciones_lista','recomendaciones_pendientes_revision','observaciones','remisiones','vigilancia_programa','lugar','fecha'];
+  const OUTPUT_FIELDS = ['nombre','cargo','tipo_examen','identificacion','examenes_lista','estado_por_examen','recomendaciones_por_examen','recomendaciones_lista','recomendaciones_pendientes_revision','observaciones','remisiones','vigilancia_programa','lugar','fecha'];
 
   class GeneratorService {
     async getAssets() {
@@ -45,7 +45,7 @@
 
     htmlPreview(data) {
       const e = SSTUtils.escapeHtml;
-      const exams = (data.examenes_lista || []).map((x) => `<li>${e(x)}</li>`).join('') || '<li>Ninguno.</li>';
+      const exams = (data.examenes_lista || []).map((x) => `<li>${e(x)}${data.estado_por_examen?.[x] ? ` — ${e(data.estado_por_examen[x])}` : ''}</li>`).join('') || '<li>Ninguno.</li>';
       const blocks = Object.entries(this.recommendationsMap(data)).map(([exam, recs]) => {
         const paragraph = recs?.length
           ? recs.map((r) => { const t=String(r||'').replace(/^[•\-–—]+\s*/, '').trim(); return t && !/[.!?]$/.test(t) ? `${t}.` : t; }).filter(Boolean).join(' ')
@@ -64,7 +64,7 @@
       body.format = format;
       body.templateHash = assets.template?.hash || 'default-template-v1';
       body.signatureHash = assets.signature?.hash || '';
-      body.documentEngineVersion = SSTDocx.engineVersion || 'template-engine-v7';
+      body.documentEngineVersion = SSTDocx.engineVersion || 'template-engine-v8';
       return SSTUtils.sha256Text(JSON.stringify(body));
     }
 
@@ -229,7 +229,7 @@
         templateName:assets.template?.name || 'Plantilla base incluida',
         templateHash:assets.template?.hash || 'default-template-v1',
         templateValidation:prepared.validation,
-        documentEngineVersion:SSTDocx.engineVersion || 'template-engine-v7'
+        documentEngineVersion:SSTDocx.engineVersion || 'template-engine-v8'
       };
       await SSTDB.put(SSTDB.stores.outputs, output);
       return { output, reused:false };

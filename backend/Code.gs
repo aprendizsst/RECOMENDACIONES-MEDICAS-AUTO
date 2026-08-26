@@ -438,6 +438,11 @@ FORMATO TIPO A — MATRIZ + TRES COLUMNAS DE RECOMENDACIONES:
 FORMATO TIPO B — EXAMEN IZQUIERDA / RECOMENDACIÓN DERECHA:
 - Puede decir «EXÁMENES DE DIAGNÓSTICO LABORAL REALIZADOS - RECOMENDACIONES».
 - La celda izquierda es examen; la derecha es su recomendación.
+- EJEMPLO REAL que debes respetar literalmente:
+  OPTOMETRÍA | CONTROL ANUAL // CONTINUAR USO PERMANENTE DE RX ÓPTICA // PAUSAS ACTIVAS VISUALES
+  EXAMEN MÉDICO OCUPACIONAL | CONTINUAR CON USO ADECUADO DE ELEMENTOS DE PROTECCIÓN PERSONAL, SEGUIR PAUTAS DE HIGIENE POSTURAL, REALIZAR PAUSAS ACTIVAS DE 5 MINUTOS POR LO MENOS CADA 2 HORAS, AUTORREGULADAS, HÁBITOS DE VIDA SALUDABLE, EN LO POSIBLE REALIZAR ACTIVIDAD FÍSICA REGULAR
+  ÉNFASIS OSTEOMUSCULAR | REALIZADO
+  Resultado esperado: conserva COMPLETAS las dos primeras recomendaciones; «REALIZADO» es estado del tercer examen y no debe convertirse en recomendación.
 - «OPTOMETRÍA | controles preventivos...» => recomendación de Optometría.
 - «GLICEMIA | REALIZADO» => Glicemia sí es examen realizado, pero «REALIZADO» NO es recomendación.
 - Si la recomendación se parte en varias líneas visuales, une todas esas líneas a la misma fila/examen hasta que empiece otro examen o una nueva sección. No pierdas palabras por saltos de línea.
@@ -755,17 +760,20 @@ function aiStatus_(user) {
   const model = String(props.getProperty('GEMINI_MODEL') || DEFAULT_GEMINI_MODEL).replace(/^models\//,'').trim();
   if (!apiKey) return { ready:false, apiKeyConfigured:false, model:model, detail:'No hay API key de Gemini configurada.' };
   try {
-    const response = UrlFetchApp.fetch(GEMINI_GENERATE_BASE_URL + encodeURIComponent(model) + '?key=' + encodeURIComponent(apiKey), {
+    // V8: prueba el endpoint de listado de modelos. La V7 consultaba una URL de modelo
+    // sin método :generateContent y podía reportar un falso fallo aunque UrlFetchApp sí funcionara.
+    const response = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/models?key=' + encodeURIComponent(apiKey), {
       method:'get', muteHttpExceptions:true, followRedirects:true
     });
     const status = response.getResponseCode();
+    const ok = status >= 200 && status < 300;
     return {
-      ready:status >= 200 && status < 300,
+      ready:ok,
       apiKeyConfigured:true,
       externalRequest:true,
       model:model,
       status:status,
-      detail:status >= 200 && status < 300 ? 'Gemini y UrlFetchApp autorizados.' : response.getContentText().slice(0,500)
+      detail:ok ? 'Gemini y UrlFetchApp autorizados.' : response.getContentText().slice(0,500)
     };
   } catch (error) {
     return {

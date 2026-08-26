@@ -368,8 +368,15 @@
   function normalizedMap(data) {
     const source = data?.recomendaciones_por_examen || {};
     const map = {};
-    if (Array.isArray(source)) for (const item of source) if (item?.examen) map[item.examen] = Array.isArray(item.recomendaciones) ? item.recomendaciones : [];
-    else for (const [k,v] of Object.entries(source)) map[k] = Array.isArray(v) ? v : [];
+    // V8: llaves explícitas. En V7 el `else` quedaba asociado al if interno
+    // (`if (item?.examen)`) y los mapas tipo objeto se ignoraban por completo.
+    if (Array.isArray(source)) {
+      for (const item of source) {
+        if (item?.examen) map[item.examen] = Array.isArray(item.recomendaciones) ? item.recomendaciones : [];
+      }
+    } else {
+      for (const [k,v] of Object.entries(source)) map[k] = Array.isArray(v) ? v : [];
+    }
     for (const exam of data?.examenes_lista || []) if (!(exam in map)) map[exam] = [];
     if (!Object.keys(map).length && data?.recomendaciones_lista?.length) map['Recomendaciones generales'] = [...data.recomendaciones_lista];
     return map;
@@ -395,20 +402,25 @@
     const pending = d.recomendaciones_pendientes_revision || [];
     $('pendingReviewBox').classList.toggle('hidden', !pending.length); $('fieldPending').value = pending.join('\n');
     const recMap = normalizedMap(d);
-    renderRecommendationGroups(recMap);
+    renderRecommendationGroups(recMap, d.estado_por_examen || {});
     if ($('recommendationCoverage')) {
       const exams = (d.examenes_lista || []).filter(Boolean);
       const covered = exams.filter((exam) => Array.isArray(recMap[exam]) && recMap[exam].length).length;
-      $('recommendationCoverage').textContent = `${covered} / ${exams.length} con detalle`;
-      $('recommendationCoverage').className = `status-badge ${covered === exams.length && exams.length ? 'success' : 'warn'}`;
-      $('recommendationCoverage').title = 'Un examen puede quedar sin recomendación solo si el PDF no contiene una indicación sustentada para ese examen.';
+      const statusOnly = exams.filter((exam) => !(recMap[exam] || []).length && (d.estado_por_examen || {})[exam]).length;
+      $('recommendationCoverage').textContent = `${covered} / ${exams.length} con recomendación${statusOnly ? ` · ${statusOnly} solo estado` : ''}`;
+      $('recommendationCoverage').className = `status-badge ${covered + statusOnly === exams.length && exams.length ? 'success' : 'warn'}`;
+      $('recommendationCoverage').title = 'Las recomendaciones deben conservar el detalle de la celda derecha. Estados como REALIZADO se muestran aparte y no se convierten en recomendaciones.';
     }
     $('saveState').textContent = doc.dirty ? 'Cambios guardados · salida pendiente de actualizar' : 'Cambios guardados automáticamente';
   }
 
-  function renderRecommendationGroups(map) {
+  function renderRecommendationGroups(map, statuses = {}) {
     const entries = Object.entries(map || {});
-    $('recommendationGroups').innerHTML = (entries.length ? entries : [['Recomendaciones generales',[]]]).map(([exam,recs],i) => `<div class="recommendation-card" data-rec-group="${i}"><div class="recommendation-card-head"><input class="rec-exam" value="${SSTUtils.escapeHtml(exam)}" aria-label="Examen"><button class="remove-group" type="button" title="Eliminar grupo">×</button></div><textarea class="rec-text" rows="4" placeholder="Detalle completo del examen. Puedes separar hallazgos por línea; al generar se integrarán en un solo párrafo.">${SSTUtils.escapeHtml((recs || []).join('\n'))}</textarea></div>`).join('');
+    $('recommendationGroups').innerHTML = (entries.length ? entries : [['Recomendaciones generales',[]]]).map(([exam,recs],i) => {
+      const status = statuses?.[exam] || '';
+      const paragraph = (recs || []).map((r) => String(r || '').trim()).filter(Boolean).join(' ');
+      return `<div class="recommendation-card" data-rec-group="${i}"><div class="recommendation-card-head"><input class="rec-exam" value="${SSTUtils.escapeHtml(exam)}" aria-label="Examen"><button class="remove-group" type="button" title="Eliminar grupo">×</button></div>${status ? `<div class="field-help">Estado detectado en el certificado: <strong>${SSTUtils.escapeHtml(status)}</strong></div>` : ''}<textarea class="rec-text" rows="4" placeholder="La recomendación completa de este examen aparecerá aquí en un solo párrafo.">${SSTUtils.escapeHtml(paragraph)}</textarea></div>`;
+    }).join('');
   }
 
   const saveSelectedDebounced = SSTUtils.debounce(async () => {
@@ -466,103 +478,170 @@
   function needsOcrRescue(data, extraction) {
     if (!extraction || extraction.usedOcr) return false;
     const critical = new Set((data?.campos_revision || []).map((x) => String(x).toLowerCase()));
+    const exams = data?.examenes_lista || [];
+    const map = normalizedMap(data || {});
+    const covered = exams.filter((exam) => Array.isArray(map[exam]) && map[exam].length).length;
+    const profile = String(data?.perfil_documental || '').toLowerCase();
+    const layout = extraction.layoutStats || {};
     if (String(data?.calidad_extraccion || '').toLowerCase() === 'revisar') return true;
+    // Si se detectaron varios exámenes pero ninguna recomendación, la tabla perdió estructura.
+    if (exams.length >= 2 && covered === 0) return true;
+    // En los dos formatos tabulares conocidos deben existir fronteras de columna. Si PDF.js
+    // no las reconstruyó, OCR se usa automáticamente como segunda lectura geométrica.
+    if ((profile.includes('tabla examen') || profile.includes('matriz de exámenes')) && Number(layout.tabRows || 0) < 2) return true;
     return ['exámenes realizados','recomendaciones','observaciones','remisiones','vigilancia epidemiológica'].some((x) => critical.has(x));
+  }
+
+  async function processUploadedFileV8(file, index, total, context) {
+    const { aiEnabled, aiReady, ocrEnabled, options } = context;
+    updateProcessing(`Procesando ${index+1} de ${total}`, file.name, index/total);
+    const buffer = await file.arrayBuffer();
+    const hash = await SSTUtils.sha256Bytes(buffer.slice(0));
+    const cached = state.documents.find((d) => d.hash === hash) || (await SSTDB.getByIndex(SSTDB.stores.documents, 'hash', hash))[0];
+    const cacheVigente = cached && cached.pipelineVersion === APP_CONFIG.pipelineVersion && !options.force;
+    if (cacheVigente) {
+      if (!state.documents.some((d) => d.id === cached.id)) state.documents.unshift(cached);
+      state.selectedDocId = cached.id;
+      state.selectedOriginalId = cached.id;
+      state.selectedBatchIds.add(cached.id);
+      if (aiEnabled && aiReady && needsAutomaticAiAudit(cached)) {
+        updateProcessing(`Validando caché con IA ${index+1} de ${total}`, `${file.name} · auditoría IA pendiente`, (index+.72)/total);
+        try {
+          await runAutomaticAiAudit(cached, { buffer, sourceText:cached.text || '', title:`Validando con IA ${index+1} de ${total}`, ratio:(index+.86)/total });
+        } catch (error) { console.warn('Gemini automático en caché:', error); }
+      } else {
+        if (needsAutomaticAiAudit(cached) && !aiReady) {
+          cached.aiValidationStatus = 'pending_auth';
+          cached.aiError = state.aiStatus?.detail || 'Gemini pendiente de autorización.';
+          await SSTDB.put(SSTDB.stores.documents, cached);
+        }
+        updateProcessing(`Reutilizando ${index+1} de ${total}`, `${file.name} · extracción V8 vigente`, (index+1)/total);
+      }
+      return { reused:true, row:cached };
+    }
+
+    const staleId = cached?.id || null;
+    if (staleId) {
+      await SSTDB.delete(SSTDB.stores.outputs, staleId);
+      state.outputs = state.outputs.filter((o) => o.id !== staleId);
+      updateProcessing(`Reanalizando ${index+1} de ${total}`, `${file.name} · motor clínico actualizado`, (index+.08)/total);
+    }
+
+    const blob = new Blob([buffer], { type:'application/pdf' });
+    let extraction = await SSTPdf.extract(blob, { ocrEnabled, onProgress: (p) => {
+      const fractional = (index + ((p.page-1) + .55) / Math.max(1,p.total)) / total;
+      updateProcessing(`Procesando ${index+1} de ${total}`, `${file.name} · ${p.message}`, fractional);
+    }});
+    updateProcessing(`Analizando ${index+1} de ${total}`, `${file.name} · filas, columnas y secciones clínicas`, (index+.7)/total);
+    let data = await SSTParser.analyze(extraction.text);
+
+    if (ocrEnabled && needsOcrRescue(data, extraction)) {
+      try {
+        updateProcessing(`Relectura visual ${index+1} de ${total}`, `${file.name} · OCR estructural automático`, (index+.74)/total);
+        const ocrExtraction = await SSTPdf.extract(blob, { ocrEnabled:true, forceOcr:true, onProgress: (p) => {
+          const fractional = (index + .72 + (((p.page-1) + .5) / Math.max(1,p.total)) * .08) / total;
+          updateProcessing(`Relectura visual ${index+1} de ${total}`, `${file.name} · ${p.message}`, fractional);
+        }});
+        const ocrData = await SSTParser.analyze(ocrExtraction.text);
+        // Prioriza cobertura clínica y estructura de tabla, no solo cantidad de texto.
+        const originalCoverage = Number(data?.cobertura_recomendaciones?.con_recomendacion || 0);
+        const ocrCoverage = Number(ocrData?.cobertura_recomendaciones?.con_recomendacion || 0);
+        const betterLayout = Number(ocrExtraction?.layoutStats?.tabRows || 0) > Number(extraction?.layoutStats?.tabRows || 0);
+        if (ocrCoverage > originalCoverage || (ocrCoverage === originalCoverage && betterLayout) || extractionScore(ocrData) > extractionScore(data) + 3) {
+          extraction = ocrExtraction;
+          data = ocrData;
+          data.modo_validacion = 'Motor clínico V8 + OCR estructural automático';
+        }
+      } catch (error) { console.warn('OCR estructural de respaldo:', error); }
+    }
+
+    data.fecha = data.fecha || SSTUtils.todayIso();
+    data.lugar = data.lugar || 'Tunja';
+    let aiError = '';
+    if (aiEnabled && aiReady && file.size <= APP_CONFIG.maxGeminiPdfMb*1024*1024) {
+      try {
+        updateProcessing(`Validando con IA ${index+1} de ${total}`, `${file.name} · auditoría visual completa`, (index+.82)/total);
+        const aiData = await SSTBackend.call('geminiAnalyze', {
+          fileName:file.name,
+          pdfBase64:SSTUtils.arrayBufferToBase64(buffer),
+          text:extraction.text.slice(0,50000),
+          localData:data,
+          model:await SSTDB.getSetting('geminiModel', APP_CONFIG.defaultGeminiModel)
+        }, { timeout:195000 });
+        data = await SSTParser.fuse(data, aiData, extraction.text);
+        data.validado_ia = true;
+      } catch (error) {
+        aiError = error.message;
+        console.warn('Gemini:', error);
+        data.modo_validacion = `${data.modo_validacion || 'Motor clínico V8'} · IA pendiente`;
+      }
+    } else if (aiEnabled && file.size > APP_CONFIG.maxGeminiPdfMb*1024*1024) {
+      aiError = `PDF mayor a ${APP_CONFIG.maxGeminiPdfMb} MB; no puede enviarse a la validación IA.`;
+    } else if (aiEnabled && !aiReady) {
+      aiError = state.aiStatus?.detail || 'Gemini pendiente de autorización.';
+    }
+
+    const now = new Date().toISOString();
+    const aiWasValidated = !aiError && aiEnabled && aiReady && file.size <= APP_CONFIG.maxGeminiPdfMb*1024*1024;
+    const row = {
+      id:staleId || crypto.randomUUID(), hash, fileName:file.name, size:file.size, type:'application/pdf', blob,
+      text:extraction.text, pageCount:extraction.pageCount, usedOcr:extraction.usedOcr,
+      layoutStats:extraction.layoutStats || {}, aiError, data,
+      pipelineVersion:APP_CONFIG.pipelineVersion,
+      aiValidationStatus: aiWasValidated ? 'validated' : (file.size > APP_CONFIG.maxGeminiPdfMb*1024*1024 ? 'skipped_size' : (!aiReady ? 'pending_auth' : (aiError ? 'error' : 'pending'))),
+      aiValidationVersion: aiWasValidated ? APP_CONFIG.aiValidationVersion : '',
+      aiValidatedAt: aiWasValidated ? now : '', aiLastAttemptAt: aiError ? now : '',
+      dirty:false, createdAt:cached?.createdAt || now, updatedAt:now
+    };
+    await SSTDB.put(SSTDB.stores.documents, row);
+    const oldIndex = state.documents.findIndex((d) => d.id === row.id);
+    if (oldIndex >= 0) state.documents.splice(oldIndex,1);
+    state.documents.unshift(row);
+    state.selectedDocId = row.id;
+    state.selectedOriginalId = row.id;
+    state.selectedBatchIds.add(row.id);
+    updateProcessing(`Completado ${index+1} de ${total}`, data.nombre || file.name, (index+1)/total);
+    return { reused:false, row };
   }
 
   async function handleFiles(fileList, options = {}) {
     const files = [...fileList].filter((f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
     if (!files.length) return toast('Selecciona archivos PDF', 'No se encontraron certificados compatibles.', 'warn');
     $('processingBanner').classList.remove('hidden');
+    const failures = [];
+    let completed = 0;
     try {
       if (!state.parserReady) await SSTParser.init((msg,p) => updateProcessing('Preparando motor clínico', msg, p*0.15));
       state.parserReady = true;
       const aiEnabled = true;
       const ocrEnabled = await SSTDB.getSetting('ocrEnabled', true);
       const aiReady = await ensureAiReady({ notify:false });
-      if (!aiReady) toast('IA pendiente', state.aiStatus?.detail || 'Los PDF se extraerán localmente, pero no podrán generarse hasta completar la validación automática con IA.', 'warn', 8500);
+      if (!aiReady) toast('IA pendiente', state.aiStatus?.detail || 'El motor local seguirá extrayendo; la auditoría IA se reintentará cuando el backend esté autorizado.', 'warn', 8500);
+
       for (let index=0; index<files.length; index++) {
-        const file = files[index];
-        updateProcessing(`Procesando ${index+1} de ${files.length}`, file.name, index/files.length);
-        const buffer = await file.arrayBuffer(); const hash = await SSTUtils.sha256Bytes(buffer.slice(0));
-        const cached = state.documents.find((d) => d.hash === hash) || (await SSTDB.getByIndex(SSTDB.stores.documents, 'hash', hash))[0];
-        const cacheVigente = cached && cached.pipelineVersion === APP_CONFIG.pipelineVersion && !options.force;
-        if (cacheVigente) {
-          if (!state.documents.some((d) => d.id === cached.id)) state.documents.unshift(cached);
-          state.selectedDocId = cached.id;
-          state.selectedOriginalId = cached.id;
-          state.selectedBatchIds.add(cached.id);
-          if (aiEnabled && aiReady && needsAutomaticAiAudit(cached)) {
-            updateProcessing(`Validando caché con IA ${index+1} de ${files.length}`, `${file.name} · faltaba auditoría IA vigente`, (index+.72)/files.length);
-            try {
-              await runAutomaticAiAudit(cached, { buffer, sourceText:cached.text || '', title:`Validando con IA ${index+1} de ${files.length}`, ratio:(index+.86)/files.length });
-            } catch (error) { console.warn('Gemini automático en caché:', error); }
-          } else {
-            if (needsAutomaticAiAudit(cached) && !aiReady) {
-              cached.aiValidationStatus = 'pending_auth';
-              cached.aiError = state.aiStatus?.detail || 'Gemini pendiente de autorización.';
-              await SSTDB.put(SSTDB.stores.documents, cached);
-            }
-            updateProcessing(`Reutilizando ${index+1} de ${files.length}`, `${file.name} ya fue extraído; ${cached.aiValidationStatus === 'validated' ? 'IA vigente' : 'IA pendiente'}`, (index+1)/files.length);
-          }
-          continue;
+        try {
+          await processUploadedFileV8(files[index], index, files.length, { aiEnabled, aiReady, ocrEnabled, options });
+          completed += 1;
+        } catch (error) {
+          console.error(`Error procesando ${files[index].name}:`, error);
+          failures.push({ file:files[index].name, message:error?.message || String(error) });
+          updateProcessing(`Archivo con error ${index+1} de ${files.length}`, `${files[index].name} · se continúa con los demás`, (index+1)/files.length);
         }
-        const staleId = cached?.id || null;
-        if (staleId) {
-          await SSTDB.delete(SSTDB.stores.outputs, staleId);
-          state.outputs = state.outputs.filter((o) => o.id !== staleId);
-          updateProcessing(`Reanalizando ${index+1} de ${files.length}`, `${file.name} · el motor fue actualizado`, (index+.08)/files.length);
-        }
-        const blob = new Blob([buffer], { type: 'application/pdf' });
-        let extraction = await SSTPdf.extract(blob, { ocrEnabled, onProgress: (p) => {
-          const fractional = (index + ((p.page-1) + .55) / Math.max(1,p.total)) / files.length;
-          updateProcessing(`Procesando ${index+1} de ${files.length}`, `${file.name} · ${p.message}`, fractional);
-        }});
-        updateProcessing(`Analizando ${index+1} de ${files.length}`, `${file.name} · reglas clínicas`, (index+.7)/files.length);
-        let data = await SSTParser.analyze(extraction.text);
-
-        // Rescate multiformato: si el texto embebido existe pero el motor detecta fronteras clínicas débiles,
-        // se vuelve a leer visualmente con OCR y se conserva la lectura que obtenga mayor puntaje estructural.
-        if (ocrEnabled && needsOcrRescue(data, extraction)) {
-          try {
-            updateProcessing(`Relectura visual ${index+1} de ${files.length}`, `${file.name} · OCR estructural de respaldo`, (index+.74)/files.length);
-            const ocrExtraction = await SSTPdf.extract(blob, { ocrEnabled:true, forceOcr:true, onProgress: (p) => {
-              const fractional = (index + .72 + (((p.page-1) + .5) / Math.max(1,p.total)) * .08) / files.length;
-              updateProcessing(`Relectura visual ${index+1} de ${files.length}`, `${file.name} · ${p.message}`, fractional);
-            }});
-            const ocrData = await SSTParser.analyze(ocrExtraction.text);
-            if (extractionScore(ocrData) > extractionScore(data)) {
-              extraction = ocrExtraction;
-              data = ocrData;
-              data.modo_validacion = 'Motor clínico multiformato + OCR estructural';
-            }
-          } catch (error) { console.warn('OCR estructural de respaldo:', error); }
-        }
-
-        data.fecha = data.fecha || SSTUtils.todayIso(); data.lugar = data.lugar || 'Tunja';
-        let aiError = '';
-        if (aiEnabled && aiReady && file.size <= APP_CONFIG.maxGeminiPdfMb*1024*1024) {
-          try {
-            updateProcessing(`Validando con IA ${index+1} de ${files.length}`, `${file.name} · lectura visual completa`, (index+.82)/files.length);
-            const aiData = await SSTBackend.call('geminiAnalyze', { fileName:file.name, pdfBase64:SSTUtils.arrayBufferToBase64(buffer), text:extraction.text.slice(0,50000), localData:data, model:await SSTDB.getSetting('geminiModel', APP_CONFIG.defaultGeminiModel) }, { timeout: 195000 });
-            data = await SSTParser.fuse(data, aiData, extraction.text);
-            data.validado_ia = true;
-          } catch (error) { aiError = error.message; console.warn('Gemini:', error); data.modo_validacion = 'Respaldo local · IA pendiente'; }
-        } else if (aiEnabled && file.size > APP_CONFIG.maxGeminiPdfMb*1024*1024) aiError = `PDF mayor a ${APP_CONFIG.maxGeminiPdfMb} MB; no puede enviarse a la validación IA.`;
-        else if (aiEnabled && !aiReady) aiError = state.aiStatus?.detail || 'Gemini pendiente de autorización.';
-        const now = new Date().toISOString();
-        const aiWasValidated = !aiError && aiEnabled && aiReady && file.size <= APP_CONFIG.maxGeminiPdfMb*1024*1024;
-        const row = { id:staleId || crypto.randomUUID(), hash, fileName:file.name, size:file.size, type:'application/pdf', blob, text:extraction.text, pageCount:extraction.pageCount, usedOcr:extraction.usedOcr, aiError, data, pipelineVersion:APP_CONFIG.pipelineVersion, aiValidationStatus: aiWasValidated ? 'validated' : (file.size > APP_CONFIG.maxGeminiPdfMb*1024*1024 ? 'skipped_size' : (!aiReady ? 'pending_auth' : (aiError ? 'error' : 'pending'))), aiValidationVersion: aiWasValidated ? APP_CONFIG.aiValidationVersion : '', aiValidatedAt: aiWasValidated ? now : '', aiLastAttemptAt: aiError ? now : '', dirty:false, createdAt:cached?.createdAt || now, updatedAt:now };
-        await SSTDB.put(SSTDB.stores.documents, row);
-        const oldIndex = state.documents.findIndex((d) => d.id === row.id);
-        if (oldIndex >= 0) state.documents.splice(oldIndex,1);
-        state.documents.unshift(row); state.selectedDocId = row.id; state.selectedOriginalId = row.id; state.selectedBatchIds.add(row.id);
-        updateProcessing(`Completado ${index+1} de ${files.length}`, data.nombre || file.name, (index+1)/files.length);
       }
       state.documents.sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
-      await renderAll(); showView('documents'); toast('Carga completada', `${files.length} archivo(s) procesados o recuperados de caché.`, 'success');
-    } catch (error) { console.error(error); toast('No fue posible procesar el lote', error.message, 'error', 8000); }
-    finally { setTimeout(() => $('processingBanner').classList.add('hidden'), 500); }
+      await renderAll();
+      showView('documents');
+      if (failures.length) {
+        toast('Lote procesado con novedades', `${completed} archivo(s) cargados correctamente; ${failures.length} fallaron. ${failures.slice(0,2).map((x)=>`${x.file}: ${x.message}`).join(' | ')}`, 'warn', 12000);
+      } else {
+        toast('Carga completada', `${completed} archivo(s) procesados correctamente.`, 'success');
+      }
+    } catch (error) {
+      console.error(error);
+      toast('No fue posible iniciar el procesamiento', error.message, 'error', 8000);
+    } finally {
+      setTimeout(() => $('processingBanner').classList.add('hidden'), 500);
+    }
   }
 
   function updateProcessing(title, detail, ratio) { $('processingTitle').textContent = title; $('processingDetail').textContent = detail; $('processingProgress').style.width = `${Math.round(Math.max(0,Math.min(1,ratio))*100)}%`; }

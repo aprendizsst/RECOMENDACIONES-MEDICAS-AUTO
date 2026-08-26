@@ -1,22 +1,9 @@
-Validaciones ejecutadas antes de entregar — V7 (26/08/2026)
-
-[OK] parser.py compila.
-[OK] Regresiones de los dos formatos clínicos conocidas superadas.
-[OK] Recomendaciones visuales/osteomusculares del formato A se asocian con evidencia fuerte.
-[OK] Recomendaciones transversales del formato A permanecen generales.
-[OK] Formato B conserva recomendación completa por fila/examen y descarta REALIZADO como recomendación.
-[OK] Remisiones del bloque dedicado se conservan.
-[OK] PVE/SVE visual se conserva solo con evidencia.
-[OK] IA falsa no puede inventar recomendaciones ni vigilancia sin evidencia.
-[OK] Todos los JavaScript pasan node --check.
-[OK] Code.gs pasa validación sintáctica JavaScript.
-[OK] appsscript.json y manifest.webmanifest son JSON válidos.
-[OK] index.html no contiene IDs duplicados.
-[OK] Referencias locales de index.html resuelven.
-[OK] Plantilla base DOCX contiene los marcadores críticos.
-[OK] pipelineVersion V7 invalida resultados clínicos de versiones anteriores.
-[OK] documentEngineVersion V7 invalida salidas documentales anteriores.
-[OK] Generación requiere IA validada.
-[OK] Vista previa institucional no tiene fallback genérico.
-[OK] Selección individual, múltiple y lote conectada.
-[OK] Inicio de sesión explícito limpia documentos y salidas, conservando configuración/plantilla/firma.
+Portal SST V8 build checks
+- Parser Python: compilación OK
+- Regresiones formato A/B: OK
+- Regresión V8 fila sin columnas: OK
+- JavaScript: validación sintáctica OK
+- Apps Script: validación sintáctica OK
+- JSON manifests: OK
+- Referencias locales del index: OK
+- DOCX base: archivo ZIP/OOXML válido

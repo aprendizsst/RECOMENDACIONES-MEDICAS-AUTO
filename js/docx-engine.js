@@ -68,7 +68,7 @@
 
   class DocxEngine {
     constructor() {
-      this.engineVersion = '2026-08-26.7-template-first';
+      this.engineVersion = '2026-08-26.8-template-first-structured';
       this.criticalMarkers = [
         '{{NUMERO DE CONSECUTIVO}}',
         '{{NOMBRE DE LA PERSONA}}',
@@ -248,7 +248,8 @@
         const original = pText(p);
         if (original.includes('{{LISTA DE EXAMENES REALIZADOS}}')) {
           const exams = (data.examenes_lista || []).filter(Boolean);
-          replaceParagraphWithLines(doc, p, exams.length ? exams.map((x) => `• ${x}`) : ['Ninguno.']);
+          const states = data.estado_por_examen || {};
+          replaceParagraphWithLines(doc, p, exams.length ? exams.map((x) => `• ${x}${states[x] ? ` — ${states[x]}` : ''}`) : ['Ninguno.']);
           continue;
         }
         if (original.includes('{{Recomendaciones médicas}}')) {
@@ -267,7 +268,8 @@
               }).filter(Boolean).join(' ');
               lines.push(paragraph || 'Sin recomendación específica registrada en el certificado.');
             } else {
-              lines.push({ text: 'Sin recomendación específica registrada en el certificado.', italic: true });
+              const status = (data.estado_por_examen || {})[exam];
+              lines.push({ text: status ? `Estado registrado en el certificado: ${status}. Sin recomendación adicional asociada.` : 'Sin recomendación específica registrada en el certificado.', italic: true });
             }
           }
           replaceParagraphWithLines(doc, p, lines);

@@ -2374,3 +2374,316 @@ def fusionar_validacion_ia(datos_locales, datos_ia, texto_fuente):
     resultado["calidad_extraccion"] = calidad
     resultado["campos_revision"] = campos
     return resultado
+
+# -----------------------------------------------------------------------------
+# Motor clínico V8: reparación de filas colapsadas y secciones críticas.
+# Motivo: algunos proveedores entregan PDFs donde PDF.js/OCR conserva la fila
+# pero no la frontera de columna. En esos casos se ve, por ejemplo:
+#   OPTOMETRIA CONTROL ANUAL // USO DE RX OPTICA // PAUSAS ACTIVAS VISUALES
+# V7 detectaba el examen pero perdía el texto de la celda derecha.
+# -----------------------------------------------------------------------------
+import unicodedata as _unicodedata_v8
+
+_ANALIZAR_PDF_V7 = analizar_pdf_inteligente
+_FUSIONAR_IA_V7 = fusionar_validacion_ia
+
+
+def _fold_keep_positions_v8(value):
+    """Mayúsculas sin tildes conservando, en la práctica, los índices del texto latino."""
+    raw = str(value or "")
+    return "".join(
+        ch for ch in _unicodedata_v8.normalize("NFD", raw)
+        if _unicodedata_v8.category(ch) != "Mn"
+    ).upper()
+
+
+def _exam_prefix_match_v8(linea):
+    """Devuelve (examen canónico, resto original) solo si el examen inicia la fila."""
+    raw = str(linea or "")
+    folded = _fold_keep_positions_v8(raw)
+    for alias, canonico in sorted(EXAMS_MAP.items(), key=lambda kv: len(_fold_keep_positions_v8(kv[0])), reverse=True):
+        a = _fold_keep_positions_v8(alias)
+        patron = r"^\s*" + re.escape(a).replace(r"\ ", r"\s+") + r"(?=\s|[:|/\-]|$)"
+        m = re.search(patron, folded)
+        if not m:
+            continue
+        resto = raw[m.end():].strip(" \t:|/–—-_,.;")
+        return canonico, resto
+    return "", ""
+
+
+def _normalizar_estado_examen_v8(value):
+    n = normalizar_etiqueta(value)
+    if re.match(r"^REALIZAD", n): return "Realizado"
+    if n == "NORMAL": return "Normal"
+    if n in {"APTO", "CUMPLE", "SI", "SÍ", "OK"}: return a_caso_oracion(value)
+    if n in {"NO", "NO APLICA", "N A", "NA"}: return a_caso_oracion(value)
+    return a_caso_oracion(value)
+
+
+def _append_full_recommendation_v8(mapa, examen, texto, join_previous=False):
+    texto = recortar_contenido_legal(str(texto or "")).strip(" •\t:|/–—-_,.;")
+    if not texto or _es_estado_examen_v6(texto):
+        return
+    # Mantiene TODO el texto; solo normaliza los separadores // a puntuación legible.
+    texto = re.sub(r"\s*//+\s*", "; ", texto)
+    texto = re.sub(r"\s{2,}", " ", texto).strip()
+    if not texto:
+        return
+    mapa.setdefault(examen, [])
+    if join_previous and mapa[examen]:
+        previo = mapa[examen][-1].rstrip()
+        if previo and not re.search(r"[.!?;:]$", previo):
+            previo += " "
+        else:
+            previo += " "
+        mapa[examen][-1] = (previo + texto).strip()
+    else:
+        mapa[examen].append(texto)
+
+
+def _repair_exam_rows_v8(texto, datos):
+    """Repara tablas examen→recomendación cuando las columnas llegaron fusionadas."""
+    lineas = _lineas_clinicas(texto)
+    examenes = normalizar_lista_clinica(datos.get("examenes_lista", []) or [])
+    mapa_actual = datos.get("recomendaciones_por_examen", {}) or {}
+    if isinstance(mapa_actual, list):
+        mapa_actual = {
+            str(x.get("examen") or ""): list(x.get("recomendaciones") or [])
+            for x in mapa_actual if isinstance(x, dict) and x.get("examen")
+        }
+    mapa = {str(k): list(v or []) for k, v in mapa_actual.items()}
+    estados = dict(datos.get("estado_por_examen", {}) or {})
+    for ex in examenes:
+        mapa.setdefault(ex, [])
+
+    activa = False
+    ultimo_examen = ""
+    explicit_rows = 0
+    perfil = str(datos.get("perfil_documental", "") or "")
+    # Señal de formato B aun si el encabezado llegó dañado: al menos dos filas
+    # comienzan por examen y continúan con recomendación/estado, sin otro examen
+    # pegado inmediatamente a la derecha (caso de la matriz del formato A).
+    candidatas_b = 0
+    for _linea in lineas:
+        _ex, _resto = _exam_prefix_match_v8(_linea)
+        if not _ex or not _resto:
+            continue
+        _ex2, _pos2, _, _ = _detectar_examen(_resto)
+        if _ex2 and 0 <= _pos2 <= 15:
+            continue
+        if _es_estado_examen_v6(_resto) or _es_recomendacion_probable(_resto):
+            candidatas_b += 1
+    formato_b_probable = "TABLA EXAMEN" in normalizar_etiqueta(perfil) or candidatas_b >= 2
+    stop_terms = [
+        "CONCEPTO LABORAL", "CONCEPTO DE APTITUD", "OBSERVACIONES", "TIPO DE RESTRICCION",
+        "TIPO DE RESTRICCIÓN", "INGRESAR AL PROGRAMA", "INFORMACION DE REMISIONES",
+        "INFORMACIÓN DE REMISIONES", "RECOMENDACIONES MEDICAS", "RECOMENDACIONES MÉDICAS",
+        "RECOMENDACIONES OCUPACIONALES", "HABITOS Y ESTILO", "HÁBITOS Y ESTILO"
+    ]
+
+    for linea in lineas:
+        n = normalizar_etiqueta(linea)
+        if ("EXAMENES" in n and "REALIZAD" in n and "RECOMEND" in n) or (
+            "DIAGNOSTICO LABORAL" in n and "RECOMEND" in n
+        ):
+            activa = True
+            ultimo_examen = ""
+            continue
+        if activa and any(x in n for x in stop_terms):
+            activa = False
+            ultimo_examen = ""
+
+        ex, resto = _exam_prefix_match_v8(linea)
+        if ex:
+            # Fuera del bloque combinado solo repara si el documento realmente se comporta
+            # como tabla examen→recomendación. Esto evita convertir la matriz de exámenes
+            # del formato A en recomendaciones falsas.
+            if not activa and not formato_b_probable:
+                continue
+            # Una fila del formato A puede contener dos exámenes lado a lado y ninguna recomendación.
+            segundo_ex, segundo_resto = _exam_prefix_match_v8(resto) if resto else ("", "")
+            if segundo_ex and (not segundo_resto or _es_estado_examen_v6(segundo_resto)):
+                for candidato in [ex, segundo_ex]:
+                    canon = canonizar_nombre_examen(candidato, examenes)
+                    if canon not in examenes: examenes.append(canon)
+                    mapa.setdefault(canon, [])
+                if segundo_resto and _es_estado_examen_v6(segundo_resto):
+                    estados[canonizar_nombre_examen(segundo_ex, examenes)] = _normalizar_estado_examen_v8(segundo_resto)
+                ultimo_examen = ""
+                continue
+
+            canon = canonizar_nombre_examen(ex, examenes)
+            if canon not in examenes: examenes.append(canon)
+            mapa.setdefault(canon, [])
+            # Acepta una fila explícita incluso si el encabezado de tabla se perdió por OCR.
+            if activa or resto or "\t" in linea:
+                explicit_rows += 1
+                ultimo_examen = canon
+                if resto:
+                    if _es_estado_examen_v6(resto):
+                        estados[canon] = _normalizar_estado_examen_v8(resto)
+                    else:
+                        _append_full_recommendation_v8(mapa, canon, resto)
+                continue
+
+        # Continuación visual de una recomendación larga en la línea siguiente.
+        if activa and ultimo_examen and linea and not _detectar_seccion(linea)[0]:
+            if not _exam_prefix_match_v8(linea)[0] and not _es_estado_examen_v6(linea):
+                nn = normalizar_etiqueta(linea)
+                if not any(x in nn for x in stop_terms) and len(nn.split()) >= 2:
+                    _append_full_recommendation_v8(mapa, ultimo_examen, linea, join_previous=True)
+
+    # Las filas explícitas del certificado prevalecen sobre una asociación semántica vacía/ambigua.
+    for ex in list(mapa):
+        mapa[ex] = normalizar_lista_clinica(deduplicar_textos(mapa[ex]), cerrar_con_punto=True)
+    datos["examenes_lista"] = normalizar_lista_clinica(examenes)
+    datos["recomendaciones_por_examen"] = agrupar_recomendaciones_por_examen(datos["examenes_lista"], [], mapa)
+    datos["recomendaciones_lista"] = aplanar_recomendaciones_por_examen(datos["recomendaciones_por_examen"])
+    datos["estado_por_examen"] = estados
+    datos["filas_examen_recomendacion_v8"] = explicit_rows
+    return datos
+
+
+def _strip_section_prefix_v8(linea, prefixes):
+    raw = str(linea or "").strip()
+    folded = _fold_keep_positions_v8(raw)
+    for prefix in sorted(prefixes, key=len, reverse=True):
+        p = _fold_keep_positions_v8(prefix)
+        m = re.match(r"^\s*" + re.escape(p).replace(r"\ ", r"\s+"), folded)
+        if m:
+            return raw[m.end():].lstrip(" \t:|/–—-_,.;")
+    return ""
+
+
+def _repair_observations_v8(texto, datos):
+    lineas = _lineas_clinicas(texto)
+    out = []
+    capt = False
+    for linea in lineas:
+        n = normalizar_etiqueta(linea)
+        # Excluye el encabezado mixto, que requiere separación distinta.
+        if n.startswith("OBSERVACIONES") and not n.startswith("OBSERVACIONES Y RECOMENDACIONES"):
+            capt = True
+            tail = _strip_section_prefix_v8(linea, ["OBSERVACIONES GENERALES", "OBSERVACIONES MEDICAS", "OBSERVACIONES"])
+            if tail: out.append(tail)
+            continue
+        if capt:
+            if any(x in n for x in [
+                "TIPO DE RESTRICCION", "TIPO DE RESTRICCIÓN", "INGRESAR AL PROGRAMA",
+                "VIGILANCIA EPIDEMIOLOGICA", "INFORMACION DE REMISIONES", "INFORMACIÓN DE REMISIONES",
+                "REMISIONES", "FIRMA", "CONSENTIMIENTO"
+            ]):
+                break
+            sec, _ = _detectar_seccion(linea)
+            if sec and sec != "observaciones":
+                break
+            if linea.strip(): out.append(linea.strip())
+    if out:
+        limpio = " ".join(deduplicar_textos([recortar_contenido_legal(x).strip(" •-_:;,./") for x in out if x.strip()])).strip()
+        n = normalizar_etiqueta(limpio)
+        if not limpio or n in _NEGACIONES_CLINICAS or n in {"NO APLICA", "SIN OBSERVACIONES"}:
+            datos["observaciones"] = "Ninguna."
+        else:
+            # Conserva acrónimos/capitalización de la fuente en vez de convertir todo a título.
+            datos["observaciones"] = limpio
+    return datos
+
+
+def _repair_referrals_v8(texto, datos):
+    lineas = _lineas_clinicas(texto)
+    capt = False
+    found_header = False
+    out = []
+    prefixes = ["INFORMACION DE REMISIONES", "INFORMACIÓN DE REMISIONES", "INFORMACION DE REMISION", "REMISIONES", "REMISION"]
+    for linea in lineas:
+        n = normalizar_etiqueta(linea)
+        if any(n.startswith(normalizar_etiqueta(p)) for p in prefixes):
+            capt = True; found_header = True
+            tail = _strip_section_prefix_v8(linea, prefixes)
+            if tail: out.append(tail)
+            continue
+        if capt:
+            if any(x in n for x in ["FIRMA", "CONSENTIMIENTO", "AUTORIZACION", "AUTORIZACIÓN", "RECOMENDACIONES"]):
+                break
+            sec, _ = _detectar_seccion(linea)
+            if sec and sec != "remisiones": break
+            if linea.strip(): out.append(linea.strip())
+    if found_header:
+        clean = []
+        for item in out:
+            item = recortar_contenido_legal(item).strip(" •-_:;,./")
+            ni = normalizar_etiqueta(item)
+            if not item or ni in _NEGACIONES_CLINICAS: continue
+            if set(re.findall(r"[A-Z]+", ni)).issubset({"SI","NO","X","NA","APLICA","REQUIERE"}): continue
+            clean.append(item)
+        datos["remisiones"] = "; ".join(deduplicar_textos(clean)) if clean else "No"
+    return datos
+
+
+def _repair_surveillance_v8(texto, datos):
+    lineas = _lineas_clinicas(texto)
+    encontrados = []
+    in_block = False
+    for i, linea in enumerate(lineas):
+        n = normalizar_etiqueta(linea)
+        if any(x in n for x in [
+            "INGRESAR AL PROGRAMA DE VIGILANCIA", "PROGRAMA DE VIGILANCIA EPIDEMIOLOGICA",
+            "PROGRAMA DE PREVENCION Y PROMOCION", "PROGRAMAS DE VIGILANCIA", "SISTEMA DE VIGILANCIA"
+        ]):
+            in_block = True
+            continue
+        if in_block and any(x in n for x in ["INFORMACION DE REMISIONES", "INFORMACIÓN DE REMISIONES", "REMISIONES", "FIRMA", "CONSENTIMIENTO"]):
+            in_block = False
+        marker = bool(re.search(r"\b(?:PVE|SVE)\b", n))
+        if not (in_block or marker):
+            continue
+        if any(x in n for x in ["NO INGRESA", "NO INGRESAR", "NO APLICA", "NO REQUIERE", "NINGUNO"]):
+            continue
+        for kw, nombre in SVE_CLINICAL_KEYWORDS.items():
+            if normalizar_etiqueta(kw) in n and nombre not in encontrados:
+                encontrados.append(nombre)
+    if encontrados:
+        datos["vigilancia_programa"] = ", ".join(deduplicar_textos(encontrados))
+        datos["vigilancia_lista"] = deduplicar_textos(encontrados)
+    return datos
+
+
+def _postprocess_critical_fields_v8(datos, texto):
+    datos = dict(datos or {})
+    datos = _repair_exam_rows_v8(texto, datos)
+    datos = _repair_observations_v8(texto, datos)
+    datos = _repair_referrals_v8(texto, datos)
+    datos = _repair_surveillance_v8(texto, datos)
+    # Recalcula cobertura y calidad tras las reparaciones de alta confianza.
+    examenes = datos.get("examenes_lista", []) or []
+    recmap = datos.get("recomendaciones_por_examen", {}) or {}
+    datos["cobertura_recomendaciones"] = {
+        "examenes": len(examenes),
+        "con_recomendacion": sum(1 for ex in examenes if (recmap.get(ex) or [])),
+        "solo_estado": sum(1 for ex in examenes if not (recmap.get(ex) or []) and (datos.get("estado_por_examen", {}) or {}).get(ex)),
+        "generales": len(recmap.get("Recomendaciones generales", []) or [])
+    }
+    calidad, campos = evaluar_calidad_extraccion(datos, texto)
+    # Si hay una fila explícita examen→recomendación ya reparada, no mantengas una alerta obsoleta de recomendaciones.
+    if datos.get("filas_examen_recomendacion_v8", 0) and any((recmap.get(ex) or []) for ex in examenes):
+        campos = [c for c in campos if normalizar_etiqueta(c) != "RECOMENDACIONES"]
+        if calidad == "Revisar" and len(campos) <= 1:
+            calidad = "Media"
+    datos["calidad_extraccion"] = calidad
+    datos["campos_revision"] = campos
+    datos["modo_validacion"] = "Motor clínico V8 · filas reparadas + secciones críticas"
+    return datos
+
+
+def analizar_pdf_inteligente(texto, metadatos_pdf=None):
+    datos = _ANALIZAR_PDF_V7(texto, metadatos_pdf)
+    return _postprocess_critical_fields_v8(datos, texto)
+
+
+def fusionar_validacion_ia(datos_locales, datos_ia, texto_fuente):
+    resultado = _FUSIONAR_IA_V7(datos_locales, datos_ia, texto_fuente)
+    resultado = _postprocess_critical_fields_v8(resultado, texto_fuente)
+    resultado["validado_ia"] = True
+    resultado["modo_validacion"] = "IA visual V8 + motor clínico con reparación estructural"
+    return resultado
