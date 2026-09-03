@@ -72,18 +72,34 @@
       return result;
     }
 
+    orderedRecommendationEntries(data, map = null) {
+      const normalize = (value) => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[^A-Z0-9]+/g,' ').trim();
+      const order = new Map((data.examenes_lista || []).filter(Boolean).map((exam, index) => [normalize(exam), index]));
+      return Object.entries(map || this.recommendationsMap(data)).sort(([examA],[examB]) => {
+        const genericA = /^recomendaciones generales$/i.test(String(examA));
+        const genericB = /^recomendaciones generales$/i.test(String(examB));
+        if (genericA !== genericB) return genericA ? 1 : -1;
+        const a = order.has(normalize(examA)) ? order.get(normalize(examA)) : Number.MAX_SAFE_INTEGER;
+        const b = order.has(normalize(examB)) ? order.get(normalize(examB)) : Number.MAX_SAFE_INTEGER;
+        return a - b;
+      });
+    }
+
     htmlPreview(data) {
       const e = SSTUtils.escapeHtml;
-      const exams = (data.examenes_lista || []).map((x) => `<li>${e(x)}${data.estado_por_examen?.[x] ? ` — ${e(data.estado_por_examen[x])}` : ''}</li>`).join('') || '<li>Ninguno.</li>';
-      const blocks = Object.entries(this.recommendationsMap(data)).map(([exam, recs]) => {
-        const paragraph = recs?.length
-          ? recs.map((r) => { const t=String(r||'').replace(/^[•\-–—]+\s*/, '').trim(); return t && !/[.!?]$/.test(t) ? `${t}.` : t; }).filter(Boolean).join(' ')
-          : '<em>Sin recomendación específica registrada en el certificado.</em>';
-        return `<div class="doc-exam"><strong>${e(exam)}:</strong><p>${recs?.length ? e(paragraph) : paragraph}</p></div>`;
-      }).join('') || '<p>Ninguna.</p>';
+      const exams = (data.examenes_lista || []).map((x) => `<li>${e(x)}</li>`).join('') || '<li>Ninguno.</li>';
+      const recommendationEntries = this.orderedRecommendationEntries(data);
+      const recommendationParagraph = recommendationEntries.length
+        ? recommendationEntries.map(([exam, recs]) => {
+            const text = (recs || []).map((r) => { const t=String(r||'').replace(/^[•\-–—]+\s*/, '').replace(/\s+/g,' ').trim(); return t && !/[.!?]$/.test(t) ? `${t}.` : t; }).filter(Boolean).join(' ');
+            if (!text) return '';
+            const label = /^recomendaciones generales$/i.test(String(exam)) ? 'De manera general:' : `Para ${exam}:`;
+            return `<strong>${e(label)}</strong> ${e(text)}`;
+          }).filter(Boolean).join(' ')
+        : 'Ninguna.';
       return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><style>
-        *{box-sizing:border-box}body{margin:0;background:#eef2f7;font-family:Arial,sans-serif;color:#253449;padding:28px}.page{max-width:850px;margin:auto;background:#fff;padding:52px 62px;min-height:1080px;box-shadow:0 15px 40px rgba(17,38,64,.16);border-top:6px solid #1769c2}.head{display:flex;justify-content:space-between;gap:20px;align-items:flex-start;border-bottom:1px solid #dbe5ef;padding-bottom:18px}.brand{font-weight:800;color:#0e4f98}.consecutive{text-align:right;font-size:12px;color:#49657d}.subject{text-align:center;background:#edf5ff;border:1px solid #cfe2fa;color:#0e4f98;padding:10px 14px;margin:24px 0;font-weight:800}.meta{line-height:1.55}.meta strong{font-size:15px}.label{font-weight:800;color:#193b5c;margin-top:20px}.doc-exam{margin:13px 0}.doc-exam>strong{color:#153b63}.doc-exam ul,ul{line-height:1.6;margin-top:6px}.signature{margin-top:54px}.signature img{max-width:165px;max-height:75px;display:block;margin-bottom:2px}.footer{margin-top:45px;border-top:1px solid #e0e8f0;padding-top:10px;font-size:10px;color:#7890a7;text-align:center}@media print{body{background:white;padding:0}.page{box-shadow:none;max-width:none;min-height:auto}}
-      </style></head><body><main class="page"><div class="head"><div class="brand">JER S.A.<br>RECOMENDACIONES MÉDICAS OCUPACIONALES</div><div class="consecutive">Consecutivo<br><strong>${e(data.consecutivo || '')}</strong></div></div><div class="subject">ASUNTO: RECOMENDACIONES EXAMEN ${e(data.tipo_examen || '')}</div><div class="meta">${e(data.lugar || 'Tunja')}, ${e(SSTUtils.formatDateEs(data.fecha || SSTUtils.todayIso()))}<br><br>Señor(a):<br><strong>${e(data.nombre || '')}</strong><br>${e(data.cargo || '')}</div><p>Cordial saludo,</p><p>Según los lineamientos del programa de medicina preventiva y del trabajo de JER S.A; se hace entrega de las recomendaciones establecidas por el Proveedor de servicios de Exámenes Médico Ocupacionales (Ingreso, Periódico, egreso, cambio de cargo y post incapacidad)</p><div class="label">EXÁMENES REALIZADOS:</div><ul>${exams}</ul><div class="label">Recomendaciones:</div>${blocks}<p><strong>Programa de vigilancia epidemiológica:</strong> ${e(data.vigilancia_programa || 'NINGUNO')}</p><p><strong>Observaciones:</strong> ${e(String(data.observaciones || '').trim() || 'Ninguna.')}</p><p><strong>Remisiones:</strong> ${e(String(data.remisiones || '').trim() || 'Ninguna.')}</p><div class="signature">${data.__signatureDataUrl ? `<img src="${data.__signatureDataUrl}" alt="Firma">` : ''}<strong>VÍCTOR ALONSO MORENO CASAS</strong><br>Coordinador SST</div><div class="footer">Portal SST · Documento generado con revisión humana</div></main></body></html>`;
+        *{box-sizing:border-box}body{margin:0;background:#eef2f7;font-family:Arial,sans-serif;color:#253449;padding:28px}.page{max-width:850px;margin:auto;background:#fff;padding:52px 62px;min-height:1080px;box-shadow:0 15px 40px rgba(17,38,64,.16);border-top:6px solid #1769c2}.head{display:flex;justify-content:space-between;gap:20px;align-items:flex-start;border-bottom:1px solid #dbe5ef;padding-bottom:18px}.brand{font-weight:800;color:#0e4f98}.consecutive{text-align:right;font-size:12px;color:#49657d}.subject{text-align:center;background:#edf5ff;border:1px solid #cfe2fa;color:#0e4f98;padding:10px 14px;margin:24px 0;font-weight:800}.meta{line-height:1.55}.meta strong{font-size:15px}.label{font-weight:800;color:#193b5c;margin-top:20px}.recommendations-paragraph{line-height:1.5;text-align:justify;margin:14px 0}.recommendations-paragraph strong{color:#153b63}ul{line-height:1.45;margin-top:6px}.signature{margin-top:54px}.signature img{max-width:165px;max-height:75px;display:block;margin-bottom:2px}.footer{margin-top:45px;border-top:1px solid #e0e8f0;padding-top:10px;font-size:10px;color:#7890a7;text-align:center}@media print{body{background:white;padding:0}.page{box-shadow:none;max-width:none;min-height:auto}}
+      </style></head><body><main class="page"><div class="head"><div class="brand">JER S.A.<br>RECOMENDACIONES MÉDICAS OCUPACIONALES</div><div class="consecutive">Consecutivo<br><strong>${e(data.consecutivo || '')}</strong></div></div><div class="subject">ASUNTO: RECOMENDACIONES EXAMEN ${e(data.tipo_examen || '')}</div><div class="meta">${e(data.lugar || 'Tunja')}, ${e(SSTUtils.formatDateEs(data.fecha || SSTUtils.todayIso()))}<br><br>Señor(a):<br><strong>${e(data.nombre || '')}</strong><br>${e(data.cargo || '')}</div><p>Cordial saludo,</p><p>Según los lineamientos del programa de medicina preventiva y del trabajo de JER S.A; se hace entrega de las recomendaciones establecidas por el Proveedor de servicios de Exámenes Médico Ocupacionales (Ingreso, Periódico, egreso, cambio de cargo y post incapacidad)</p><div class="label">EXÁMENES REALIZADOS:</div><ul>${exams}</ul><p class="recommendations-paragraph"><strong>Recomendaciones:</strong> ${recommendationParagraph}</p><p><strong>Programa de vigilancia epidemiológica:</strong> ${e(data.vigilancia_programa || 'NINGUNO')}</p><p><strong>Observaciones:</strong> ${e(String(data.observaciones || '').trim() || 'Ninguna.')}</p><p><strong>Remisiones:</strong> ${e(String(data.remisiones || '').trim() || 'Ninguna.')}</p><div class="signature">${data.__signatureDataUrl ? `<img src="${data.__signatureDataUrl}" alt="Firma">` : ''}<strong>VÍCTOR ALONSO MORENO CASAS</strong><br>Coordinador SST</div><div class="footer">Portal SST · Documento generado con revisión humana</div></main></body></html>`;
     }
 
     async fingerprint(data, format, assets) {
@@ -159,14 +175,12 @@
       for (const exam of data.examenes_lista || []) text(`• ${exam}`, { size: 9, indent: 4, after: 1 });
       text('Recomendaciones:', { bold: true, size: 9, color: [25,59,92], after: 2 });
       const map = this.recommendationsMap(data);
-      if (!Object.keys(map).length) text('Ninguna.', { size: 9, indent: 4 });
-      for (const [exam, recs] of Object.entries(map)) {
-        text(`${exam}:`, { bold: true, size: 9, indent: 2, after: 1 });
-        if (recs?.length) {
-          const paragraph = recs.map((rec) => { const clean=String(rec||'').replace(/^[•\-–—]+\s*/, '').trim(); return clean && !/[.!?]$/.test(clean) ? `${clean}.` : clean; }).filter(Boolean).join(' ');
-          text(paragraph, { size: 8.8, indent: 6, after: 2 });
-        } else text('Sin recomendación específica registrada en el certificado.', { italic: true, size: 8.5, indent: 6, color: [91,107,123], after: 2 });
-      }
+      const recommendationText = this.orderedRecommendationEntries(data, map).map(([exam, recs]) => {
+        const detail = (recs || []).map((rec) => { const clean=String(rec||'').replace(/^[•\-–—]+\s*/, '').replace(/\s+/g,' ').trim(); return clean && !/[.!?]$/.test(clean) ? `${clean}.` : clean; }).filter(Boolean).join(' ');
+        if (!detail) return '';
+        return `${/^recomendaciones generales$/i.test(String(exam)) ? 'De manera general' : `Para ${exam}`}: ${detail}`;
+      }).filter(Boolean).join(' ');
+      text(recommendationText || 'Ninguna.', { size: 8.8, indent: 2, after: 3 });
       text(`Programa de vigilancia epidemiológica: ${data.vigilancia_programa || 'NINGUNO'}`, { size: 9, after: 3 });
       text(`Observaciones: ${String(data.observaciones || '').trim() || 'Ninguna.'}`, { size: 9, after: 3 });
       text(`Remisiones: ${String(data.remisiones || '').trim() || 'Ninguna.'}`, { size: 9, after: 6 });

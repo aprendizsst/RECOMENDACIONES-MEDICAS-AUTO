@@ -9,6 +9,9 @@
     parserReady: false, authBootstrap: null, selectedBatchIds: new Set(), aiStatus: null
   };
 
+  let originalRenderSequence = 0;
+  let originalResizeTimer = null;
+
   const viewMeta = {
     dashboard: ['PANEL OPERATIVO','Inicio'], documents: ['INGESTA Y REVISIÓN','Documentos'],
     originals: ['FUENTES ORIGINALES','PDF originales'], generated: ['SALIDAS','Documentos generados'],
@@ -628,8 +631,28 @@
       const aiValue = String(ai[aiKey] ?? '').trim(); if(!aiValue)continue;
       const localValue=String(local[key]??'').trim();
       if(!localValue){ out[key]=aiValue; continue; }
+
+      // V10.3 · tipo de examen: el valor explícito del perfil conocido tiene
+      // prioridad. La IA puede redactar "seguimiento laboral" mientras el PDF
+      // dice "examen de seguimiento con restricciones"; eso es equivalencia,
+      // no una discrepancia. Solo bloqueamos categorías realmente opuestas.
+      if(key==='tipo_examen'){
+        const comparison = SSTProfiles.compareExamTypes
+          ? SSTProfiles.compareExamTypes(localValue, aiValue)
+          : { equivalent:semanticSignature(localValue)===semanticSignature(aiValue), materialConflict:false };
+        if(highProfile){
+          out[key]=localValue;
+          if(comparison.materialConflict) reviewFlags.push('discrepancia IA: tipo_examen');
+        } else if(comparison.equivalent){
+          out[key]=localValue;
+        } else {
+          out[key]=aiValue;
+        }
+        continue;
+      }
+
       if(semanticSignature(localValue)===semanticSignature(aiValue)) { out[key]=key==='observaciones'?SSTProfiles.normalizeClinicalText(aiValue):aiValue; continue; }
-      const narrative=['observaciones','remisiones','tipo_examen','lugar'].includes(key);
+      const narrative=['observaciones','remisiones','lugar'].includes(key);
       if(narrative){
         const l=semanticSignature(localValue), a=semanticSignature(aiValue);
         if(l.includes(a)||a.includes(l)) out[key]=a.length>l.length?aiValue:localValue;
@@ -657,7 +680,7 @@
     }
     out.evidencias = ai.evidencias || out.evidencias || {};
     out.validado_ia = true;
-    out.modo_validacion = `V10 · ${out.perfil_documental || 'formato detectado'} + auditoría visual IA + fusión sin pérdida`;
+    out.modo_validacion = `V10.3 · ${out.perfil_documental || 'formato detectado'} + auditoría visual IA + fusión semántica sin pérdida`;
     const missing = [];
     if (!String(out.nombre || '').trim()) missing.push('nombre');
     if (!String(out.cargo || '').trim()) missing.push('cargo');
@@ -1031,12 +1054,38 @@
     return generateDocumentsBatch(state.documents, 'todo el lote');
   }
 
+  function renderOriginalPreviewPage() {
+    const doc = state.documents.find((d) => d.id === state.selectedOriginalId);
+    if (!doc || !isViewActive('originals')) return;
+    const canvas = $('originalCanvas');
+    const stage = canvas.parentElement;
+    const sequence = ++originalRenderSequence;
+    requestAnimationFrame(async () => {
+      try {
+        const result = await SSTPdf.renderPage(doc.blob, state.originalPage, canvas, { container:stage });
+        if (sequence !== originalRenderSequence) return;
+        $('originalViewerMeta').textContent = `${doc.fileName} · Ajustado al ancho`;
+        if (result?.pageCount && result.pageCount !== doc.pageCount) {
+          doc.pageCount = result.pageCount;
+          $('originalPageLabel').textContent = `${state.originalPage} / ${result.pageCount}`;
+        }
+      } catch (e) {
+        if (sequence === originalRenderSequence) toast('No se pudo renderizar el PDF', e.message, 'error');
+      }
+    });
+  }
+
+  function scheduleOriginalPreviewRefit() {
+    clearTimeout(originalResizeTimer);
+    originalResizeTimer = setTimeout(() => renderOriginalPreviewPage(), 120);
+  }
+
   function renderOriginals() {
     $('originalList').innerHTML = state.documents.length ? state.documents.map((d) => `<div class="document-item ${d.id===state.selectedOriginalId?'active':''}" data-original-id="${d.id}"><div class="doc-icon">PDF</div><div class="doc-main"><strong>${SSTUtils.escapeHtml(d.data?.nombre || d.fileName)}</strong><small>${d.pageCount || '—'} página(s) · ${SSTUtils.bytesLabel(d.size)}</small><em>${d.usedOcr?'OCR utilizado':'Texto PDF'}</em></div><button class="item-delete" type="button" data-delete-doc="${d.id}" title="Eliminar este archivo">×</button></div>`).join('') : '<div class="empty-state compact"><span>◫</span><strong>Sin PDF originales</strong></div>';
     const doc = state.documents.find((d) => d.id === state.selectedOriginalId);
-    if (!doc) { $('originalViewerTitle').textContent='Selecciona un PDF'; $('originalViewerMeta').textContent='—'; $('originalPageLabel').textContent='0 / 0'; $('originalCanvas').style.display='none'; $('originalEmpty').classList.remove('hidden'); return; }
-    $('originalViewerTitle').textContent = doc.data?.nombre || doc.fileName; $('originalViewerMeta').textContent = doc.fileName; $('originalPageLabel').textContent = `${state.originalPage} / ${doc.pageCount || 1}`; $('originalEmpty').classList.add('hidden'); $('originalCanvas').style.display='block';
-    if (isViewActive('originals')) requestAnimationFrame(() => SSTPdf.renderPage(doc.blob, state.originalPage, $('originalCanvas')).catch((e) => toast('No se pudo renderizar el PDF', e.message, 'error')));
+    if (!doc) { originalRenderSequence++; $('originalViewerTitle').textContent='Selecciona un PDF'; $('originalViewerMeta').textContent='—'; $('originalPageLabel').textContent='0 / 0'; $('originalCanvas').style.display='none'; $('originalEmpty').classList.remove('hidden'); return; }
+    $('originalViewerTitle').textContent = doc.data?.nombre || doc.fileName; $('originalViewerMeta').textContent = `${doc.fileName} · Ajustando…`; $('originalPageLabel').textContent = `${state.originalPage} / ${doc.pageCount || 1}`; $('originalEmpty').classList.add('hidden'); $('originalCanvas').style.display='block';
+    renderOriginalPreviewPage();
   }
 
   function renderGenerated() {
@@ -1234,6 +1283,11 @@
     qsa('.nav-item[data-view]').forEach((b)=>b.addEventListener('click',()=>showView(b.dataset.view)));
     qsa('[data-go]').forEach((b)=>b.addEventListener('click',()=>showView(b.dataset.go)));
     $('btnSidebar').addEventListener('click',()=>$('sidebar').classList.toggle('open'));
+    window.addEventListener('resize',scheduleOriginalPreviewRefit,{passive:true});
+    if (window.ResizeObserver) {
+      const originalStage = $('originalCanvas')?.parentElement;
+      if (originalStage) new ResizeObserver(() => { if (isViewActive('originals')) scheduleOriginalPreviewRefit(); }).observe(originalStage);
+    }
     $('btnLogout').addEventListener('click',async()=>{try{if(state.backendOnline&&!state.localMode)await SSTBackend.call('logout');}catch(_){}await SSTDB.setAuth('sessionToken','');await clearWorkspaceForNewSession();state.user=null;state.localMode=false;await showAuth();});
     const openFile=()=>$('pdfInput').click(); $('btnQuickUpload').addEventListener('click',()=>{showView('documents');openFile();}); $('btnUploadMain').addEventListener('click',openFile); $('dropZone').addEventListener('click',openFile); $('pdfInput').addEventListener('change',(e)=>{handleFiles(e.target.files);e.target.value='';});
     for(const type of ['dragenter','dragover'])$('dropZone').addEventListener(type,(e)=>{e.preventDefault();$('dropZone').classList.add('dragover');}); for(const type of ['dragleave','drop'])$('dropZone').addEventListener(type,(e)=>{e.preventDefault();$('dropZone').classList.remove('dragover');}); $('dropZone').addEventListener('drop',(e)=>handleFiles(e.dataTransfer.files));

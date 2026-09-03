@@ -468,6 +468,12 @@ FORMATO TIPO B — EXAMEN IZQUIERDA / RECOMENDACIÓN DERECHA:
 - La misma regla aplica a cualquier examen, incluso si su nombre no está en ejemplos previos: PERFIL LIPÍDICO, KOH DE UÑAS, COPROLÓGICO, FROTIS FARÍNGEO, ÉNFASIS CARDIOVASCULAR, ÉNFASIS OSTEOMUSCULAR y futuros nombres del proveedor.
 - Si la recomendación se parte en varias líneas visuales, une todas esas líneas a la misma fila/examen hasta que empiece otro examen o una nueva sección. No pierdas palabras por saltos de línea.
 
+TIPO DE EXAMEN — REGLA ESPECIAL V10.3:
+- Si el PDF tiene un campo o valor explícito de tipo de examen/concepto (por ejemplo «EXAMEN DE SEGUIMIENTO CON RESTRICCIONES» o «CONTROL PERIÓDICO CON RECOMENDACIONES»), copia ese texto con la mayor fidelidad posible en tipo_examen; no lo reemplaces por una paráfrasis más corta.
+- Expresiones equivalentes de una misma familia no constituyen contradicción por sí solas: «seguimiento laboral», «seguimiento ocupacional», «control de seguimiento» y «examen de seguimiento con restricciones» pertenecen a SEGUIMIENTO; «control periódico con recomendaciones», «examen periódico» y «evaluación médica ocupacional periódica» pertenecen a PERIÓDICO; «preingreso/preocupacional» a INGRESO; «retiro» a EGRESO; «post incapacidad/reintegro/reincorporación» a POST INCAPACIDAD.
+- revision_requerida NO debe activarse únicamente porque el motor local y tu salida usen redacciones diferentes dentro de la misma familia semántica.
+- Sí debe existir revisión cuando las categorías sean materialmente distintas (por ejemplo INGRESO vs EGRESO, PERIÓDICO vs SEGUIMIENTO) y el PDF no permita resolver cuál es correcta.
+
 REGLAS ESTRICTAS:
 1. RECOMENDACIONES POR EXAMEN: en el formato B relaciona por misma fila/celda, encabezado inequívoco o prefijo «Examen: recomendación». En el formato A permite relación semántica FUERTE según las reglas anteriores. Incluye TODOS los exámenes realizados en recomendaciones_por_examen; si un examen no tiene recomendación sustentada usa lista vacía. Si su celda dice REALIZADO/NORMAL/NO APLICA/APTO, deja recomendaciones vacías y registra ese valor en estados_por_examen.
 2. RECOMENDACIONES GENERALES: conserva las recomendaciones transversales y las que no puedan asociarse con suficiente certeza. No resumas, no parafrasees y no elimines detalles; cada elemento debe conservar el texto clínico completo.
@@ -499,6 +505,7 @@ ${text}`;
         const auditPrompt = `AUDITORÍA FINAL ADVERSARIAL. Relee el PDF completo sin asumir que la primera extracción es correcta.
 
 Verifica obligatoriamente:
+- Tipo de examen: prioriza el valor explícito del PDF y no marques revisión por simples sinónimos de la misma categoría (p. ej. seguimiento laboral = examen de seguimiento con restricciones; periódico = control periódico con recomendaciones).
 - Tabla examen/recomendación: relación por FILA, no por palabras internas.
 - Tres columnas médicas/ocupacionales/hábitos: conservar todo; asociar solo relaciones semánticas fuertes por examen y mantener generales las recomendaciones transversales.
 - «REALIZADO» es estado, no recomendación; consérvalo en estados_por_examen.

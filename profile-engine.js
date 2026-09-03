@@ -57,6 +57,45 @@
     return s;
   }
 
+
+  // V10.3: normalización semántica del tipo de examen. El objetivo no es
+  // reescribir el texto clínico, sino comparar categorías equivalentes sin
+  // generar falsos positivos por diferencias de redacción entre motor local e IA.
+  function examTypeCategory(value) {
+    const n = fold(value);
+    if (!n) return '';
+    // Orden de mayor especificidad a menor especificidad.
+    if (/POST\s*INCAPACIDAD|POSTINCAPACIDAD|REINTEGRO|REINCORPORACION|RETORNO\s+LABORAL/.test(n)) return 'POST_INCAPACIDAD';
+    if (/CAMBIO\s+(?:DE\s+)?CARGO|CAMBIO\s+(?:DE\s+)?PUESTO/.test(n)) return 'CAMBIO_CARGO';
+    if (/EGRESO|RETIRO/.test(n)) return 'EGRESO';
+    if (/PRE\s*INGRESO|PREINGRESO|PRE\s*OCUPACIONAL|PREOCUPACIONAL|(?:^| )INGRESO(?: |$)/.test(n) && !/REINGRESO/.test(n)) return 'INGRESO';
+    if (/SEGUIMIENTO|CONTROL\s+(?:DE\s+)?SEGUIMIENTO|CONTROL\s+LABORAL/.test(n)) return 'SEGUIMIENTO';
+    if (/PERIODIC/.test(n)) return 'PERIODICO';
+    return '';
+  }
+
+  function compareExamTypes(localValue, aiValue) {
+    const localText = clean(localValue), aiText = clean(aiValue);
+    const l = fold(localText), a = fold(aiText);
+    const localCategory = examTypeCategory(localText), aiCategory = examTypeCategory(aiText);
+    if (!localText || !aiText) {
+      return { equivalent:false, materialConflict:false, localCategory, aiCategory, reason:'missing_value' };
+    }
+    if (l === a || (l.length >= 8 && a.length >= 8 && (l.includes(a) || a.includes(l)))) {
+      return { equivalent:true, materialConflict:false, localCategory, aiCategory, reason:'text_equivalent' };
+    }
+    if (localCategory && aiCategory && localCategory === aiCategory) {
+      return { equivalent:true, materialConflict:false, localCategory, aiCategory, reason:'same_category' };
+    }
+    // Solo existe contradicción material cuando AMBAS fuentes se pueden clasificar
+    // con seguridad y pertenecen a categorías distintas. Una paráfrasis no
+    // clasificada nunca debe bloquear un documento de perfil conocido.
+    if (localCategory && aiCategory && localCategory !== aiCategory) {
+      return { equivalent:false, materialConflict:true, localCategory, aiCategory, reason:'different_category' };
+    }
+    return { equivalent:false, materialConflict:false, localCategory, aiCategory, reason:'wording_difference' };
+  }
+
   function findLabelValue(ls, labels, options={}) {
     const labelsFold = labels.map(fold);
     for (let i=0;i<ls.length;i++) {
@@ -311,7 +350,7 @@
     const missing=[]; if(!out.nombre)missing.push('nombre'); if(!out.cargo)missing.push('cargo'); if(!out.examenes_lista.length)missing.push('exámenes realizados'); if(!out.recomendaciones_lista.length&&!out.restricciones_lista.length)missing.push('recomendaciones/restricciones');
     const base = profileId==='GENERICO'?45:88; const confidence=Math.max(0,Math.min(99,base-missing.length*12+(out.identificacion?2:0)+(out.fecha?2:0)));
     out.perfil_documental = profileId==='JER_TABLA'?'Formato JER · tabla clínica':profileId==='CONTROL_PERIODICO'?'Formato control periódico · matriz clínica':'Formato genérico';
-    out.motor_formato='Perfil V10'; out.confianza_formato=confidence; out.calidad_extraccion=confidence>=92?'Alta':confidence>=78?'Media':'Revisar'; out.campos_revision=missing; out.recomendaciones_pendientes_revision=[]; out.modo_validacion=`Motor por formato V10 · ${out.perfil_documental}`;
+    out.motor_formato='Perfil V10.3'; out.confianza_formato=confidence; out.calidad_extraccion=confidence>=92?'Alta':confidence>=78?'Media':'Revisar'; out.campos_revision=missing; out.recomendaciones_pendientes_revision=[]; out.modo_validacion=`Motor por formato V10.3 · ${out.perfil_documental}`;
     return out;
   }
 
@@ -333,5 +372,5 @@
     data.perfil_detectado=profile; return data;
   }
 
-  window.SSTProfiles={ detectProfile, analyze, merge, normalizeClinicalText };
+  window.SSTProfiles={ detectProfile, analyze, merge, normalizeClinicalText, examTypeCategory, compareExamTypes };
 })();

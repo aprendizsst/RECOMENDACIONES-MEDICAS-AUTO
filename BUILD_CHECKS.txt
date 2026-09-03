@@ -1,12 +1,11 @@
-V10.1 BUILD CHECKS · 2026-09-03
-
-PASS · node tests/profile_engine_v10.js
-PASS · python tests/parser_regression.py
-PASS · node --check on all active JS modules
-PASS · root /js mirrors synchronized for config/app/profile/generator/docx-engine
-PASS · Code.gs == backend/Code.gs
-PASS · default template DOCX rendered to one clean A4 page
-PASS · generated sample DOCX rendered to one clean A4 page
-PASS · Gemini preferred model: gemini-3.8-flash, structured JSON, thinking level low
-PASS · batch cap: 50 PDFs, local queue: 4, AI audit queue: 3
-PASS · generation fails closed when AI validation or quality review is pending
+V10.4 build checks
+==================
+OK · Sintaxis JavaScript validada con node --check.
+OK · Perfiles JER_TABLA + CONTROL_PERIODICO.
+OK · Filas REALIZADO/NORMAL/APTO no exigen recomendación.
+OK · Normalización semántica de tipo de examen V10.3.
+OK · Lista de exámenes de salida: solo nombres, sin estado “— REALIZADO”.
+OK · Recomendaciones: un único párrafo, ordenado por examen, con texto completo.
+OK · Visor PDF: ajuste al ancho, sin flex-centering, transform PDF.js correcto y reajuste responsive.
+OK · Archivos raíz y /js sincronizados.
+OK · Backend sin cambios respecto a V10.3.

@@ -99,6 +99,23 @@
     return !n || ['NO','NINGUNO','NINGUNA','NO APLICA','N/A','NA','SIN REMISIONES','SIN OBSERVACIONES'].includes(n);
   }
 
+
+  function recommendationKey(value) {
+    return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[^A-Z0-9]+/g,' ').trim();
+  }
+
+  function orderedRecommendationEntries(data, map) {
+    const order = new Map((data.examenes_lista || []).filter(Boolean).map((exam, index) => [recommendationKey(exam), index]));
+    return Object.entries(map || {}).sort(([examA], [examB]) => {
+      const genericA = /^recomendaciones generales$/i.test(String(examA));
+      const genericB = /^recomendaciones generales$/i.test(String(examB));
+      if (genericA !== genericB) return genericA ? 1 : -1;
+      const a = order.has(recommendationKey(examA)) ? order.get(recommendationKey(examA)) : Number.MAX_SAFE_INTEGER;
+      const b = order.has(recommendationKey(examB)) ? order.get(recommendationKey(examB)) : Number.MAX_SAFE_INTEGER;
+      return a - b;
+    });
+  }
+
   async function imageDimensions(blob) {
     const url = URL.createObjectURL(blob);
     try {
@@ -131,7 +148,7 @@
 
   class DocxEngine {
     constructor() {
-      this.engineVersion = '2026-09-03.10.1-letter-output';
+      this.engineVersion = '2026-09-03.10.4-compact-letter-output';
       this.criticalMarkers = [
         '{{NUMERO DE CONSECUTIVO}}',
         '{{NOMBRE DE LA PERSONA}}',
@@ -311,30 +328,37 @@
         const original = pText(p);
         if (original.includes('{{LISTA DE EXAMENES REALIZADOS}}')) {
           const exams = (data.examenes_lista || []).filter(Boolean);
-          const states = data.estado_por_examen || {};
-          replaceParagraphWithLines(doc, p, exams.length ? exams.map((x) => `✓  ${x}${states[x] ? ` — ${states[x]}` : ''}`) : ['Ninguno.']);
+          // V10.4: el listado institucional muestra únicamente el nombre del examen.
+          // Estados técnicos como REALIZADO/NORMAL/APTO permanecen en los datos de control,
+          // pero no se imprimen en la carta para evitar ruido visual y ahorrar espacio.
+          replaceParagraphWithLines(doc, p, exams.length ? exams.map((x) => `✓  ${x}`) : ['Ninguno.']);
           continue;
         }
         if (original.includes('{{Recomendaciones médicas}}')) {
           const map = this.recommendationsMap(data);
-          const useful = Object.entries(map).map(([exam, recs]) => {
+          const useful = orderedRecommendationEntries(data, map).map(([exam, recs]) => {
             const unique = []; const seen = new Set();
             for (const rec of Array.isArray(recs) ? recs : []) {
               const sentence = cleanRecommendationSentence(rec);
-              const key = sentence.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[^A-Z0-9]+/g,' ').trim();
+              const key = recommendationKey(sentence);
               if (sentence && key && !seen.has(key)) { seen.add(key); unique.push(sentence); }
             }
             return [exam, unique];
           }).filter(([, recs]) => recs.length);
 
           if (!useful.length) { setPText(doc, p, ''); continue; }
-          const singleClinical = useful.length === 1 && !/^recomendaciones generales$/i.test(String(useful[0][0]));
-          const groups = useful.map(([exam,recs]) => {
+
+          // V10.4: todas las recomendaciones quedan en UN solo párrafo justificado.
+          // Se mantiene el texto clínico completo; únicamente se añaden conectores/etiquetas
+          // para identificar con claridad a qué examen corresponde cada recomendación.
+          const runs = [{ text:'Recomendaciones: ', bold:true }];
+          useful.forEach(([exam,recs], index) => {
+            if (index) runs.push({ text:' ' });
             const isGeneric = /^recomendaciones generales$/i.test(String(exam));
-            const label = singleClinical ? 'Recomendaciones: ' : (isGeneric ? 'Recomendaciones generales: ' : `Recomendaciones – ${exam}: `);
-            return [{ text:label, bold:true }, { text:recs.join(' ').replace(/\s+/g,' ').trim() }];
+            runs.push({ text:isGeneric ? 'De manera general: ' : `Para ${exam}: `, bold:true });
+            runs.push({ text:recs.join(' ').replace(/\s+/g,' ').trim() });
           });
-          replaceParagraphWithRichParagraphs(doc, p, groups);
+          replaceParagraphWithRichRuns(doc, p, runs);
           continue;
         }
         if (original.toLowerCase().includes('{{restricciones laborales}}')) {

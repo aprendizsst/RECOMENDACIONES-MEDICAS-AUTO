@@ -98,3 +98,31 @@ for (const exam of ['Perfil lipídico','KOH de uñas','Coprológico','Frotis far
 }
 assert.equal(c.campos_revision.length,0);
 console.log('OK · formato JER con exámenes de estado REALIZADO');
+
+
+// Regresión V10.3: diferencias de redacción dentro de la misma familia de
+// tipo de examen no son contradicciones materiales.
+const eqSeguimiento=P.compareExamTypes('EXAMEN DE SEGUIMIENTO CON RESTRICCIONES','Seguimiento laboral');
+assert.equal(eqSeguimiento.equivalent,true);
+assert.equal(eqSeguimiento.materialConflict,false);
+assert.equal(eqSeguimiento.localCategory,'SEGUIMIENTO');
+assert.equal(eqSeguimiento.aiCategory,'SEGUIMIENTO');
+
+const eqPeriodico=P.compareExamTypes('CONTROL PERIÓDICO CON RECOMENDACIONES','Evaluación médica ocupacional periódica');
+assert.equal(eqPeriodico.equivalent,true);
+assert.equal(eqPeriodico.materialConflict,false);
+assert.equal(eqPeriodico.localCategory,'PERIODICO');
+
+const eqIngreso=P.compareExamTypes('EXAMEN PREOCUPACIONAL','Ingreso');
+assert.equal(eqIngreso.equivalent,true);
+assert.equal(eqIngreso.localCategory,'INGRESO');
+
+const conflict=P.compareExamTypes('EXAMEN DE INGRESO','EXAMEN DE EGRESO');
+assert.equal(conflict.equivalent,false);
+assert.equal(conflict.materialConflict,true);
+assert.equal(conflict.localCategory,'INGRESO');
+assert.equal(conflict.aiCategory,'EGRESO');
+
+const wording=P.compareExamTypes('EXAMEN MÉDICO OCUPACIONAL','VALORACIÓN OCUPACIONAL');
+assert.equal(wording.materialConflict,false);
+console.log('OK · V10.3 normalización semántica de tipo de examen');

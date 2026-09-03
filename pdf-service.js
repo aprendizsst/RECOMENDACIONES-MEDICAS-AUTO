@@ -137,9 +137,21 @@
   }
 
   class PdfService {
+    constructor() {
+      // La vista previa reutiliza el PDF ya abierto. Evita releer el Blob al cambiar de página
+      // o al reajustar la ventana y hace la navegación mucho más fluida.
+      this.pdfCache = new WeakMap();
+    }
+
     async loadFromBlob(blob) {
-      const buffer = await blob.arrayBuffer();
-      return pdfjsLib.getDocument({ data: new Uint8Array(buffer.slice(0)) }).promise;
+      if (blob && typeof blob === 'object' && this.pdfCache.has(blob)) return this.pdfCache.get(blob);
+      const promise = (async () => {
+        const buffer = await blob.arrayBuffer();
+        return pdfjsLib.getDocument({ data: new Uint8Array(buffer.slice(0)) }).promise;
+      })();
+      if (blob && typeof blob === 'object') this.pdfCache.set(blob, promise);
+      try { return await promise; }
+      catch (error) { if (blob && typeof blob === 'object') this.pdfCache.delete(blob); throw error; }
     }
 
     async extract(blob, options = {}) {
@@ -190,18 +202,28 @@
       const pdf = await this.loadFromBlob(blob);
       const page = await pdf.getPage(Math.max(1, Math.min(pageNumber, pdf.numPages)));
       const base = page.getViewport({ scale: 1 });
-      const containerWidth = options.maxWidth || canvas.parentElement?.clientWidth || 1000;
-      const scale = Math.max(0.75, Math.min(2.25, (containerWidth - 36) / base.width));
+      const stage = options.container || canvas.parentElement;
+      const style = stage ? getComputedStyle(stage) : null;
+      const horizontalPadding = style ? (parseFloat(style.paddingLeft || 0) + parseFloat(style.paddingRight || 0)) : 0;
+      const measuredWidth = Number(options.maxWidth || stage?.clientWidth || 1000);
+      const availableWidth = Math.max(240, measuredWidth - horizontalPadding - 4);
+      const fitScale = availableWidth / Math.max(1, base.width);
+      const scale = Math.max(0.45, Math.min(2.25, fitScale * Number(options.zoom || 1)));
       const viewport = page.getViewport({ scale });
-      const ratio = window.devicePixelRatio || 1;
-      canvas.width = Math.floor(viewport.width * ratio);
-      canvas.height = Math.floor(viewport.height * ratio);
-      canvas.style.width = `${viewport.width}px`;
-      canvas.style.height = `${viewport.height}px`;
-      const ctx = canvas.getContext('2d');
-      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-      await page.render({ canvasContext: ctx, viewport }).promise;
-      return { pageCount: pdf.numPages, pageNumber: page.pageNumber };
+      const outputScale = Math.max(1, Math.min(2, Number(window.devicePixelRatio || 1)));
+
+      // Bitmap en alta densidad, tamaño CSS exacto. PDF.js recibe el transform de salida;
+      // no se aplica ctx.setTransform manual, que podía producir una vista desplazada.
+      canvas.width = Math.max(1, Math.floor(viewport.width * outputScale));
+      canvas.height = Math.max(1, Math.floor(viewport.height * outputScale));
+      canvas.style.width = `${Math.floor(viewport.width)}px`;
+      canvas.style.height = `${Math.floor(viewport.height)}px`;
+      canvas.style.margin = '0 auto';
+      canvas.style.display = 'block';
+      const ctx = canvas.getContext('2d', { alpha:false });
+      const transform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null;
+      await page.render({ canvasContext: ctx, viewport, transform, background:'#ffffff' }).promise;
+      return { pageCount: pdf.numPages, pageNumber: page.pageNumber, scale };
     }
 
     async renderAll(blob, container, options = {}) {
