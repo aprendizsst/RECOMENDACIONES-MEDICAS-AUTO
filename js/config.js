@@ -1,14 +1,16 @@
 window.APP_CONFIG = Object.freeze({
   appName: "Portal SST · Recomendaciones Médicas",
   companyName: "JER S.A.",
-  version: "2026.09.03-github-pages-v10.4",
-  pipelineVersion: "2026-09-03.10.4-compact-output-preview",
+  version: "2026.09.03-github-pages-v10.6",
+  pipelineVersion: "2026-09-03.10.6-email-batch",
   aiValidationVersion: "2026-09-03.10.3-ai-semantic-examtype-audit",
-  documentEngineVersion: "2026-09-03.10.4-compact-letter-output",
+  documentEngineVersion: "2026-09-03.10.6-compact-letter-email-batch",
+  requiredBackendVersion: "2026.09.03-v10.6-email-batch",
   defaultBackendUrl: "https://script.google.com/macros/s/AKfycbxNrv9iLsaY3lIQ6evDnf3zWVanKJNhBzDDiGWkP3W1hX6JYR0vSjMz9lINUYCg_UqVsw/exec",
   defaultGeminiModel: "gemini-3.8-flash",
   maxGeminiPdfMb: 18,
   maxBatchFiles: 50,
+  maxEmailRawBatchMb: 14,
   localConcurrency: 4,
   aiConcurrency: 3,
   highConfidenceProfileThreshold: 92,
@@ -16,5 +18,7 @@ window.APP_CONFIG = Object.freeze({
   aiRequiredForGeneration: true,
   clearWorkspaceOnExplicitLogin: true,
   emailSubject: "Recomendación médica ocupacional - {nombre}",
-  emailBody: `Cordial saludo,\n\nA continuación hago envío de la recomendación médica de {nombre}, identificado(a) con el número de cédula {identificacion}.\n\nSe requiere confirmar la recepción de este correo. Asimismo, el documento debe firmarse y enviarse nuevamente de forma física, diligenciado con nombre, cédula y fecha.\n\nCordialmente,\nSeguridad y Salud en el Trabajo\nJER S.A.`
+  emailBody: `Cordial saludo,\n\nA continuación hago envío de la recomendación médica de {nombre}, identificado(a) con el número de cédula {identificacion}.\n\nSe requiere confirmar la recepción de este correo. Asimismo, el documento debe firmarse y enviarse nuevamente de forma física, diligenciado con nombre, cédula y fecha.\n\nCordialmente,\nSeguridad y Salud en el Trabajo\nJER S.A.`,
+  emailBulkSubject: "Recomendaciones médicas ocupacionales - {cantidad} documentos",
+  emailBulkBody: `Cordial saludo,\n\nA continuación hago envío de {cantidad} recomendaciones médicas ocupacionales correspondientes a: {nombres}.\n\nSe requiere confirmar la recepción de este correo. Los documentos adjuntos deben ser revisados y gestionados de acuerdo con el procedimiento establecido.\n\nCordialmente,\nSeguridad y Salud en el Trabajo\nJER S.A.`
 });

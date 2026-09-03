@@ -1,4 +1,5 @@
 const APP_NAME = 'Portal SST · Recomendaciones Médicas';
+const BACKEND_VERSION = '2026.09.03-v10.6-email-batch';
 const GEMINI_GENERATE_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models/';
 const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
 const SESSION_HOURS = 8;
@@ -7,6 +8,10 @@ const EMAIL_SHEET = 'HistorialCorreos';
 const CONSECUTIVE_SHEET = 'Consecutivos';
 const CONSECUTIVE_LEDGER_SHEET = 'ConsecutivosControl';
 const CONSECUTIVE_LEDGER_HEADERS = ['document_key','consecutivo','spreadsheet_id','sheet_name','creado_en'];
+const DOCUMENT_SHEET = 'DocumentosProcesados';
+const DOCUMENT_HEADERS = ['document_key','pdf_origen','trabajador','identificacion','correo','cargo','tipo_examen','fecha_examen','lugar','examenes_realizados','estados_examenes','recomendaciones','restricciones','observaciones','remisiones','vigilancia_programa','perfil_documental','calidad_extraccion','validado_ia','campos_revision','consecutivo','estado_sincronizacion','usuario','creado_en','actualizado_en'];
+const DIAGNOSTIC_SHEET = 'DiagnosticoBackend';
+const DIAGNOSTIC_HEADERS = ['fecha','usuario','backend_version','prueba','resultado'];
 const CONSECUTIVE_HEADERS = ['consecutivo','numero','anio','fecha_documento','trabajador','identificacion','cargo','tipo_examen','pdf_origen','hash_documento','usuario','creado_en'];
 
 function doGet(e) {
@@ -73,7 +78,7 @@ function apiDispatch(requestJson) {
     const sessionToken = String(req.session || '');
 
     switch (action) {
-      case 'ping': return { ok: true, message: 'Google Apps Script conectado', app: APP_NAME, time: new Date().toISOString() };
+      case 'ping': return { ok: true, message: 'Google Apps Script conectado', app: APP_NAME, backendVersion: BACKEND_VERSION, capabilities:['documentSync','sheetDiagnostics','batchConsecutives','geminiAudit','email','emailMultiAttachment'], time: new Date().toISOString() };
       case 'bootstrapStatus': return bootstrapStatus_();
       case 'register': return register_(payload);
       case 'login': return login_(payload);
@@ -92,6 +97,10 @@ function apiDispatch(requestJson) {
       case 'reserveConsecutives': return reserveConsecutives_(requireSession_(sessionToken), payload);
       case 'consecutiveStatus': return consecutiveStatus_(requireSession_(sessionToken));
       case 'saveConsecutiveConfig': return saveConsecutiveConfig_(requireAdmin_(sessionToken), payload);
+      case 'saveDocumentRecord': return saveDocumentRecords_(requireSession_(sessionToken), {items:[payload]} );
+      case 'saveDocumentRecords': return saveDocumentRecords_(requireSession_(sessionToken), payload);
+      case 'documentSyncStatus': return documentSyncStatus_(requireSession_(sessionToken));
+      case 'backendDiagnostics': return backendDiagnostics_(requireSession_(sessionToken), payload);
       case 'mailStatus': return mailStatus_(requireSession_(sessionToken));
       case 'sendEmail': return sendEmail_(requireSession_(sessionToken), payload);
       case 'emailHistory': return emailHistory_(requireSession_(sessionToken), payload);
@@ -119,6 +128,8 @@ function getDb_() {
   initializeSheet_(ss, EMAIL_SHEET, ['fecha','pdf_origen','trabajador','destinatario','cc','cco','asunto','archivo','estado','detalle']);
   initializeSheet_(ss, CONSECUTIVE_SHEET, CONSECUTIVE_HEADERS);
   initializeSheet_(ss, CONSECUTIVE_LEDGER_SHEET, CONSECUTIVE_LEDGER_HEADERS);
+  initializeSheet_(ss, DOCUMENT_SHEET, DOCUMENT_HEADERS);
+  initializeSheet_(ss, DIAGNOSTIC_SHEET, DIAGNOSTIC_HEADERS);
   return ss;
 }
 
@@ -539,6 +550,147 @@ Devuelve el JSON COMPLETO corregido. Si algo no tiene evidencia visual, elimína
   throw new Error(lastError || 'Gemini no devolvió una extracción utilizable.');
 }
 
+function compactCell_(value, maxLen) {
+  const limit = Number(maxLen || 45000);
+  const text = Array.isArray(value) ? value.map(function(x){ return typeof x === 'string' ? x : JSON.stringify(x); }).filter(Boolean).join('\n') : String(value == null ? '' : value);
+  return text.length > limit ? text.slice(0, limit - 20) + '\n[TRUNCADO]' : text;
+}
+
+function normalizeDocumentKey_(item) {
+  return String((item && (item.documentKey || item.hash || item.id)) || '').trim();
+}
+
+function documentRecordRow_(item, user, createdAt) {
+  const data = (item && item.data) || item || {};
+  const key = normalizeDocumentKey_(item);
+  if (!key) throw new Error('No se recibió document_key para sincronizar el certificado.');
+  const exams = data.examenes_lista || data.examenes_realizados || [];
+  const statuses = data.estado_por_examen || data.estados_por_examen || {};
+  const recommendations = data.recomendaciones_por_examen || {};
+  const restrictions = data.restricciones_lista || data.restricciones || [];
+  const review = data.campos_revision || [];
+  return [
+    key,
+    String(item.fileName || item.sourceFile || data.pdf_origen || ''),
+    String(data.nombre || ''),
+    String(data.identificacion || ''),
+    String(data.correo || ''),
+    String(data.cargo || ''),
+    String(data.tipo_examen || ''),
+    String(data.fecha || ''),
+    String(data.lugar || ''),
+    compactCell_(exams),
+    compactCell_(typeof statuses === 'string' ? statuses : JSON.stringify(statuses)),
+    compactCell_(typeof recommendations === 'string' ? recommendations : JSON.stringify(recommendations)),
+    compactCell_(typeof restrictions === 'string' ? restrictions : JSON.stringify(restrictions)),
+    compactCell_(data.observaciones || ''),
+    compactCell_(data.remisiones || ''),
+    compactCell_(data.vigilancia_programa || ''),
+    String(data.perfil_documental || (data.perfil_detectado && (data.perfil_detectado.nombre || data.perfil_detectado.id)) || ''),
+    String(data.calidad_extraccion || ''),
+    data.validado_ia === true || String(item.aiValidationStatus || '') === 'validated' ? 'SI' : 'NO',
+    compactCell_(review),
+    String(data.consecutivo || item.consecutive || ''),
+    String(item.syncState || 'SINCRONIZADO'),
+    String((user && user.username) || ''),
+    createdAt || new Date(),
+    new Date()
+  ];
+}
+
+function loadDocumentKeyIndex_(sheet) {
+  const out = {};
+  const last = sheet.getLastRow();
+  if (last <= 1) return out;
+  const keys = sheet.getRange(2,1,last-1,1).getDisplayValues();
+  for (let i=0;i<keys.length;i++) {
+    const key = String(keys[i][0] || '').trim();
+    if (key) out[key] = i + 2;
+  }
+  return out;
+}
+
+function saveDocumentRecords_(user, payload) {
+  const items = Array.isArray(payload && payload.items) ? payload.items.slice(0, 50) : [];
+  if (!items.length) return { saved:0, updated:0, inserted:0, sheetName:DOCUMENT_SHEET, backendVersion:BACKEND_VERSION };
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const db = getDb_();
+    const sheet = initializeSheet_(db, DOCUMENT_SHEET, DOCUMENT_HEADERS);
+    const index = loadDocumentKeyIndex_(sheet);
+    const appendRows = [];
+    let updated = 0;
+    items.forEach(function(item){
+      const key = normalizeDocumentKey_(item);
+      if (!key) return;
+      const existingRow = index[key] || 0;
+      let createdAt = new Date();
+      if (existingRow) {
+        const existingCreated = sheet.getRange(existingRow,24).getValue();
+        if (existingCreated) createdAt = existingCreated;
+      }
+      const row = documentRecordRow_(item, user, createdAt);
+      if (existingRow) {
+        sheet.getRange(existingRow,1,1,DOCUMENT_HEADERS.length).setValues([row]);
+        updated++;
+      } else {
+        appendRows.push(row);
+        index[key] = sheet.getLastRow() + appendRows.length;
+      }
+    });
+    if (appendRows.length) sheet.getRange(sheet.getLastRow()+1,1,appendRows.length,DOCUMENT_HEADERS.length).setValues(appendRows);
+    SpreadsheetApp.flush();
+    return {
+      saved: updated + appendRows.length,
+      updated: updated,
+      inserted: appendRows.length,
+      sheetName: sheet.getName(),
+      spreadsheetName: db.getName(),
+      spreadsheetId: db.getId(),
+      totalRows: Math.max(0, sheet.getLastRow()-1),
+      backendVersion: BACKEND_VERSION
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function documentSyncStatus_(user) {
+  const db = getDb_();
+  const sheet = initializeSheet_(db, DOCUMENT_SHEET, DOCUMENT_HEADERS);
+  return {
+    backendVersion: BACKEND_VERSION,
+    spreadsheetName: db.getName(),
+    spreadsheetId: db.getId(),
+    sheetName: sheet.getName(),
+    rows: Math.max(0, sheet.getLastRow()-1)
+  };
+}
+
+function backendDiagnostics_(user, payload) {
+  const db = getDb_();
+  const documentSheet = initializeSheet_(db, DOCUMENT_SHEET, DOCUMENT_HEADERS);
+  const diagnostics = initializeSheet_(db, DIAGNOSTIC_SHEET, DIAGNOSTIC_HEADERS);
+  let writeProbe = null;
+  if (payload && payload.writeProbe === true) {
+    diagnostics.appendRow([new Date(), String(user.username || ''), BACKEND_VERSION, 'WRITE_PROBE', 'OK']);
+    SpreadsheetApp.flush();
+    writeProbe = { ok:true, row:diagnostics.getLastRow(), sheet:diagnostics.getName() };
+  }
+  let consecutive = null;
+  try { consecutive = consecutiveStatus_(user); }
+  catch (error) { consecutive = { ok:false, error:String(error && error.message || error) }; }
+  return {
+    ok:true,
+    backendVersion:BACKEND_VERSION,
+    capabilities:['documentSync','sheetDiagnostics','batchConsecutives','geminiAudit','email','emailMultiAttachment'],
+    portalDatabase:{ name:db.getName(), id:db.getId(), documentSheet:documentSheet.getName(), documentRows:Math.max(0,documentSheet.getLastRow()-1) },
+    consecutive:consecutive,
+    writeProbe:writeProbe
+  };
+}
+
 function normalizeSheetId_(value) {
   const raw = String(value || '').trim();
   if (!raw) return '';
@@ -569,33 +721,33 @@ function consecutiveSpreadsheet_() {
 
 function locateConsecutiveSheet_(ss) {
   const cfg = consecutiveConfig_();
+  const externalConfigured = !!cfg.spreadsheetId;
   let sheet = ss.getSheetByName(cfg.sheetName);
-  if (!sheet) sheet = ss.insertSheet(cfg.sheetName);
+  if (!sheet) {
+    if (externalConfigured) throw new Error('No existe la pestaña "' + cfg.sheetName + '" en la hoja configurada. Corrige el nombre; el portal no creará otra pestaña silenciosamente.');
+    sheet = ss.insertSheet(cfg.sheetName);
+  }
   if (sheet.getLastRow() === 0) initializeSheet_(ss, sheet.getName(), CONSECUTIVE_HEADERS);
-  const maxRows = Math.min(Math.max(sheet.getLastRow(),1), 10);
-  const maxCols = Math.min(Math.max(sheet.getLastColumn(), CONSECUTIVE_HEADERS.length), 50);
+  const maxRows = Math.min(Math.max(sheet.getLastRow(),1), 15);
+  const maxCols = Math.min(Math.max(sheet.getLastColumn(), CONSECUTIVE_HEADERS.length), 60);
   const values = sheet.getRange(1,1,maxRows,maxCols).getDisplayValues();
   const accepted = [
     'CONSECUTIVO','CONSECUTIVO SST','NUMERO DE CONSECUTIVO','NUMERO CONSECUTIVO',
-    'N CONSECUTIVO','NRO CONSECUTIVO','NO CONSECUTIVO','NUM CONSECUTIVO','NUMERO'
+    'N CONSECUTIVO','NRO CONSECUTIVO','NO CONSECUTIVO','NUM CONSECUTIVO','NUMERO',
+    'N','NO','NRO','NUM','NUMERO SST','CONSECUTIVO COMUNICACION','CONSECUTIVO CARTA'
   ];
   let headerRow = -1, consecutiveCol = -1;
   for (let r=0;r<values.length;r++) {
     for (let c=0;c<values[r].length;c++) {
       const h = normalizeHeader_(values[r][c]);
-      const matches = accepted.indexOf(h) >= 0 || /^(?:N|NO|NRO|NUM|NUMERO)?\s*CONSECUTIVO(?:\s+SST)?$/.test(h);
+      const matches = accepted.indexOf(h) >= 0 || /^(?:N|NO|NRO|NUM|NUMERO)?\s*CONSECUTIVO(?:\s+(?:SST|CARTA|COMUNICACION))?$/.test(h);
       if (matches) { headerRow=r+1; consecutiveCol=c+1; break; }
     }
     if (consecutiveCol > 0) break;
   }
   if (consecutiveCol < 0) {
-    // No se pisa una hoja existente incompatible: se crea una hoja administrada por el bot.
-    if (sheet.getLastRow() > 0 && sheet.getLastColumn() > 0) {
-      let alt = ss.getSheetByName(CONSECUTIVE_SHEET + '_BOT');
-      if (!alt) alt = ss.insertSheet(CONSECUTIVE_SHEET + '_BOT');
-      if (alt.getLastRow() === 0) initializeSheet_(ss, alt.getName(), CONSECUTIVE_HEADERS);
-      return locateConsecutiveSheetByName_(alt);
-    }
+    const sample = values.slice(0,3).map(function(row){ return row.filter(String).slice(0,12).join(' | '); }).filter(Boolean).join(' / ');
+    throw new Error('No se encontró la columna de consecutivo en "' + sheet.getName() + '". Usa un encabezado como CONSECUTIVO, N° CONSECUTIVO o NUMERO. Encabezados detectados: ' + (sample || 'ninguno') + '.');
   }
   return locateConsecutiveSheetByName_(sheet, headerRow, consecutiveCol);
 }
@@ -982,25 +1134,35 @@ function sendEmail_(user, payload) {
   const cc = cleanEmailList_(payload.cc).filter(validEmail_).filter(function(x){return x !== to;});
   const bcc = cleanEmailList_(payload.bcc).filter(validEmail_).filter(function(x){return x !== to && cc.indexOf(x) < 0;});
   const subject = String(payload.subject || '').trim(), body = String(payload.body || '').trim();
-  const attachment = payload.attachment || {};
-  const baseHistory = { date:new Date().toISOString(), sourceFile:String(payload.sourceFile||''), worker:String(payload.personName||''), to:to, cc:cc.join(', '), bcc:bcc.join(', '), subject:subject, file:String(attachment.filename||'') };
+  const attachmentsInput = Array.isArray(payload.attachments) && payload.attachments.length ? payload.attachments : (payload.attachment ? [payload.attachment] : []);
+  const fileNames = attachmentsInput.map(function(a){ return String(a && a.filename || ''); }).filter(Boolean);
+  const baseHistory = { date:new Date().toISOString(), sourceFile:String(payload.sourceFile||''), worker:String(payload.personName||''), to:to, cc:cc.join(', '), bcc:bcc.join(', '), subject:subject, file:fileNames.join(' | ') };
   try {
     if (!validEmail_(to)) throw new Error('El destinatario no es válido: ' + (to || '(vacío)'));
     if (!subject || !body) throw new Error('El asunto y el cuerpo del mensaje no pueden estar vacíos.');
-    if (!attachment.base64 || !attachment.filename) throw new Error('No se recibió el documento adjunto.');
-    const bytes = Utilities.base64Decode(String(attachment.base64));
-    if (bytes.length > 20 * 1024 * 1024) throw new Error('El adjunto supera 20 MB. Reduce el tamaño antes de enviarlo.');
-    const blob = Utilities.newBlob(bytes, String(attachment.mime || 'application/octet-stream'), String(attachment.filename));
+    if (!attachmentsInput.length) throw new Error('No se recibieron documentos adjuntos.');
+    if (attachmentsInput.length > 100) throw new Error('El correo supera el máximo de 100 adjuntos por paquete.');
+
+    let totalBytes = 0;
+    const blobs = attachmentsInput.map(function(attachment){
+      if (!attachment || !attachment.base64 || !attachment.filename) throw new Error('Uno de los adjuntos está incompleto.');
+      const bytes = Utilities.base64Decode(String(attachment.base64));
+      totalBytes += bytes.length;
+      if (bytes.length > 20 * 1024 * 1024) throw new Error('El adjunto ' + String(attachment.filename) + ' supera 20 MB.');
+      return Utilities.newBlob(bytes, String(attachment.mime || 'application/octet-stream'), String(attachment.filename));
+    });
+    if (totalBytes > 20 * 1024 * 1024) throw new Error('El conjunto de adjuntos supera 20 MB. El portal debe dividirlo en más de un correo.');
+
     const options = {
       to:to, subject:subject, body:body, htmlBody:String(body).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>'),
-      attachments:[blob], name:'Seguridad y Salud en el Trabajo - JER S.A.'
+      attachments:blobs, name:'Seguridad y Salud en el Trabajo - JER S.A.'
     };
     if (cc.length) options.cc = cc.join(',');
     if (bcc.length) options.bcc = bcc.join(',');
     MailApp.sendEmail(options);
-    const history = Object.assign({}, baseHistory, { status:'Enviado', detail:'Mensaje aceptado por MailApp.' });
+    const history = Object.assign({}, baseHistory, { status:'Enviado', detail:'Mensaje aceptado por MailApp con ' + blobs.length + ' adjunto(s).' });
     appendEmailHistory_(history);
-    return { sent:true, history:history, remainingQuota:MailApp.getRemainingDailyQuota() };
+    return { sent:true, history:history, attachmentCount:blobs.length, totalBytes:totalBytes, remainingQuota:MailApp.getRemainingDailyQuota() };
   } catch (error) {
     const history = Object.assign({}, baseHistory, { status:'Error', detail:error && error.message ? error.message : String(error) });
     try { appendEmailHistory_(history); } catch (_) {}

@@ -6,7 +6,7 @@
     selectedOriginalId: null, originalPage: 1, selectedOutputId: null,
     user: null, localMode: false, backendOnline: false, backendInfo: null,
     controlTab: 'validation', lastCacheStats: { generated: 0, reused: 0 },
-    parserReady: false, authBootstrap: null, selectedBatchIds: new Set(), aiStatus: null
+    parserReady: false, authBootstrap: null, selectedBatchIds: new Set(), selectedEmailIds: new Set(), emailMode: 'individual', emailFormat: 'PDF', aiStatus: null
   };
 
   let originalRenderSequence = 0;
@@ -39,6 +39,78 @@
     $('qualityGemini').textContent = online ? 'Disponible' : 'Sin backend';
   }
 
+
+  function backendVersionCompatible(info = state.backendInfo) {
+    const required = String(APP_CONFIG.requiredBackendVersion || '').trim();
+    if (!required) return true;
+    return String(info?.backendVersion || '').trim() === required;
+  }
+
+  function backendVersionLabel(info = state.backendInfo) {
+    const deployed = String(info?.backendVersion || '').trim();
+    const required = String(APP_CONFIG.requiredBackendVersion || '').trim();
+    if (!deployed) return required ? `Backend sin versión identificable · se requiere ${required}` : 'Backend conectado';
+    return required && deployed !== required ? `Backend ${deployed} · se requiere ${required}` : `Backend ${deployed}`;
+  }
+
+  function backendDocumentRecord(doc) {
+    return {
+      documentKey: String(doc?.hash || doc?.id || ''),
+      fileName: String(doc?.fileName || ''),
+      aiValidationStatus: String(doc?.aiValidationStatus || ''),
+      consecutive: String(doc?.data?.consecutivo || ''),
+      syncState: 'SINCRONIZADO',
+      data: SSTUtils.deepClone(doc?.data || {})
+    };
+  }
+
+  async function syncDocumentsToBackend(documents, options = {}) {
+    const docs = (documents || []).filter(Boolean);
+    if (!docs.length || !state.backendOnline || state.localMode) return { saved:0, skipped:true };
+    const token = await SSTDB.getAuth('sessionToken', '');
+    if (!token) return { saved:0, skipped:true };
+    if (!backendVersionCompatible()) {
+      const message = `${backendVersionLabel()}. Actualiza Code.gs y vuelve a implementar la Web App antes de sincronizar.`;
+      if (!options.silent) toast('Apps Script desactualizado', message, 'error', 10000);
+      throw new Error(message);
+    }
+    let saved = 0, inserted = 0, updated = 0;
+    const chunkSize = 20;
+    for (let i=0; i<docs.length; i+=chunkSize) {
+      const chunk = docs.slice(i, i+chunkSize);
+      const response = await SSTBackend.call('saveDocumentRecords', { items: chunk.map(backendDocumentRecord) }, { timeout:90000 });
+      saved += Number(response?.saved || 0);
+      inserted += Number(response?.inserted || 0);
+      updated += Number(response?.updated || 0);
+    }
+    const stamp = new Date().toISOString();
+    for (const doc of docs) {
+      doc.remoteSyncStatus = 'synced';
+      doc.remoteSyncedAt = stamp;
+      doc.remoteSyncError = '';
+      await SSTDB.put(SSTDB.stores.documents, doc);
+    }
+    return { saved, inserted, updated, skipped:false };
+  }
+
+  async function testBackendWrite() {
+    if (!state.backendOnline || state.localMode) return toast('Backend requerido','Conecta Google Apps Script antes de probar la escritura.','warn');
+    try {
+      const result = await SSTBackend.call('backendDiagnostics', { writeProbe:true }, { timeout:60000 });
+      state.backendInfo = Object.assign({}, state.backendInfo || {}, { backendVersion:result.backendVersion, capabilities:result.capabilities || [] });
+      const db = result.portalDatabase || {};
+      if ($('backendDiagnosticsDetail')) $('backendDiagnosticsDetail').textContent = `Escritura OK · ${result.backendVersion || 'sin versión'} · ${db.name || 'Base Portal'} / ${db.documentSheet || 'DocumentosProcesados'} · ${db.documentRows ?? 0} certificado(s) sincronizado(s).`;
+      $('settingsBackendStatus').textContent = 'Escritura OK';
+      $('settingsBackendStatus').className = 'status-badge success';
+      toast('Apps Script y Sheets listos', `Prueba de escritura registrada en ${result.writeProbe?.sheet || 'DiagnosticoBackend'}.`, 'success', 7000);
+    } catch (error) {
+      if ($('backendDiagnosticsDetail')) $('backendDiagnosticsDetail').textContent = `Error de escritura: ${error.message}`;
+      $('settingsBackendStatus').textContent = 'Revisar backend';
+      $('settingsBackendStatus').className = 'status-badge error';
+      toast('No se pudo escribir en Sheets', error.message, 'error', 10000);
+    }
+  }
+
   async function init() {
     try {
       setBoot('Inicializando almacenamiento local…', 18); await SSTDB.init();
@@ -50,6 +122,9 @@
       $('settingsBackendUrl').value = backendUrl || '';
       $('emailSubject').value = await SSTDB.getSetting('emailSubject', APP_CONFIG.emailSubject);
       $('emailBody').value = await SSTDB.getSetting('emailBody', APP_CONFIG.emailBody);
+      state.emailMode = await SSTDB.getSetting('emailMode', 'individual');
+      state.emailFormat = await SSTDB.getSetting('emailAttachmentFormat', 'PDF');
+      $('emailCommonTo').value = await SSTDB.getSetting('emailCommonTo', '');
       $('toggleAi').checked = true; $('toggleAi').disabled = true; await SSTDB.setSetting('aiEnabled', true);
       $('toggleOcr').checked = await SSTDB.getSetting('ocrEnabled', true);
       $('settingsOutputFormat').value = await SSTDB.getSetting('outputFormat', 'PDF');
@@ -249,6 +324,8 @@
         } catch (error) { failed++; console.warn(`IA automática ${doc.fileName}:`, error); }
         finally { done++; }
       });
+      try { if (ok) await syncDocumentsToBackend(pending.filter((d)=>d.aiValidationStatus==='validated'), { silent:true }); }
+      catch (syncError) { console.warn('Sincronización posterior a IA:', syncError); }
       await renderAll();
       if (ok) toast('Validación IA automática', `${ok} certificado(s) auditado(s)${failed ? ` · ${failed} pendiente(s)` : ''}.`, failed ? 'warn' : 'success', 6500);
     } finally {
@@ -258,6 +335,19 @@
 
   async function refreshBackendDiagnostics() {
     if (!state.backendOnline || state.localMode) return;
+    try {
+      const diag = await SSTBackend.call('backendDiagnostics', {}, { timeout:30000 });
+      state.backendInfo = Object.assign({}, state.backendInfo || {}, { backendVersion:diag.backendVersion, capabilities:diag.capabilities || [] });
+      const db = diag.portalDatabase || {};
+      const compatible = backendVersionCompatible();
+      $('settingsBackendStatus').textContent = compatible ? 'Conectado y sincronizando' : 'Actualizar Apps Script';
+      $('settingsBackendStatus').className = `status-badge ${compatible ? 'success' : 'warn'}`;
+      if ($('backendDiagnosticsDetail')) $('backendDiagnosticsDetail').textContent = `${backendVersionLabel()} · ${db.name || 'Base Portal'} / ${db.documentSheet || 'DocumentosProcesados'} · ${db.documentRows ?? 0} certificado(s) guardado(s).${compatible ? '' : ' Debes reemplazar Code.gs y publicar una nueva versión de la Web App.'}`;
+    } catch (error) {
+      if ($('backendDiagnosticsDetail')) $('backendDiagnosticsDetail').textContent = `El backend responde, pero no expone el diagnóstico V10.6: ${error.message}. Actualiza Code.gs y vuelve a implementar la Web App.`;
+      $('settingsBackendStatus').textContent = 'Backend desactualizado';
+      $('settingsBackendStatus').className = 'status-badge warn';
+    }
     try {
       const ai = await SSTBackend.call('aiStatus', {}, { timeout: 30000 });
       state.aiStatus = ai;
@@ -459,8 +549,15 @@
     }).join('');
   }
 
+  const remoteSyncSelectedDebounced = SSTUtils.debounce(async () => {
+    const doc = selectedDocument(); if (!doc || !state.backendOnline || state.localMode) return;
+    try { await syncDocumentsToBackend([doc], { silent:true }); }
+    catch (error) { doc.remoteSyncStatus='error'; doc.remoteSyncError=error.message; await SSTDB.put(SSTDB.stores.documents, doc); }
+    renderControlTable();
+  }, 1400);
+
   const saveSelectedDebounced = SSTUtils.debounce(async () => {
-    const doc = selectedDocument(); if (!doc) return; doc.updatedAt = new Date().toISOString(); await SSTDB.put(SSTDB.stores.documents, doc); renderDocumentList(); renderDashboard(); renderControlTable();
+    const doc = selectedDocument(); if (!doc) return; doc.updatedAt = new Date().toISOString(); await SSTDB.put(SSTDB.stores.documents, doc); renderDocumentList(); renderDashboard(); renderControlTable(); remoteSyncSelectedDebounced();
   }, 280);
 
   function syncEditorToState() {
@@ -888,6 +985,17 @@
         });
       }
 
+      const processedDocs = localResults.map((x) => x?.row).filter(Boolean);
+      if (state.backendOnline && !state.localMode && processedDocs.length) {
+        try {
+          const sync = await syncDocumentsToBackend(processedDocs, { silent:true });
+          updateProcessing('Sincronización con Sheets', `${sync.saved} certificado(s) guardados en DocumentosProcesados`, .985);
+        } catch (error) {
+          processedDocs.forEach((doc) => { doc.remoteSyncStatus='error'; doc.remoteSyncError=error.message; });
+          failures.push({ file:'Google Sheets', message:error.message });
+        }
+      }
+
       state.documents.sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
       state.selectedDocId = state.documents[0]?.id || state.selectedDocId;
       state.selectedOriginalId = state.documents[0]?.id || state.selectedOriginalId;
@@ -980,6 +1088,7 @@
       doc.updatedAt = doc.aiValidatedAt;
       doc.dirty = state.outputs.some((o) => o.id === doc.id || o.documentId === doc.id);
       await SSTDB.put(SSTDB.stores.documents, doc);
+      try { await syncDocumentsToBackend([doc], { silent:true }); } catch (syncError) { doc.remoteSyncStatus='error'; doc.remoteSyncError=syncError.message; await SSTDB.put(SSTDB.stores.documents, doc); }
       updateProcessing('Auditoría completada', `${doc.data?.modo_validacion || 'IA + motor clínico'} · calidad ${doc.data?.calidad_extraccion || '—'}`, 1);
       await renderAll();
       toast('Validación IA completada', `${doc.data?.nombre || doc.fileName} · ${(doc.data?.campos_revision || []).length ? 'quedan campos por revisar' : 'sin alertas estructurales'}.`, (doc.data?.campos_revision || []).length ? 'warn' : 'success', 7500);
@@ -1011,7 +1120,7 @@
     const missing = validateForGeneration(doc); if (missing.length) return toast('Revisión incompleta', `Resuelve: ${missing.join(', ')}.`, 'warn', 6500);
     try {
       updateProcessing('Generando documento', doc.data.nombre || doc.fileName, .35); $('processingBanner').classList.remove('hidden');
-      const { output, reused } = await SSTGenerator.generate(doc); doc.dirty = false; await SSTDB.put(SSTDB.stores.documents, doc);
+      const { output, reused } = await SSTGenerator.generate(doc); doc.dirty = false; await SSTDB.put(SSTDB.stores.documents, doc); try { await syncDocumentsToBackend([doc], { silent:true }); } catch (syncError) { doc.remoteSyncStatus='error'; doc.remoteSyncError=syncError.message; await SSTDB.put(SSTDB.stores.documents, doc); }
       const idx = state.outputs.findIndex((x) => x.id === output.id); if (idx >= 0) state.outputs[idx] = output; else state.outputs.unshift(output); state.selectedOutputId = output.id;
       state.lastCacheStats = { generated: reused ? 0 : 1, reused: reused ? 1 : 0 };
       await renderAll(); showView('generated'); toast(reused ? 'Vista reutilizada' : 'Documento generado', reused ? 'No hubo cambios; se conservó la salida existente.' : output.filename, 'success');
@@ -1037,6 +1146,7 @@
       const result = await SSTGenerator.generateAll(documents, null, (done,total,doc,status) => updateProcessing(`Generando ${label} · ${done}/${total}`, `${doc.data?.nombre || doc.fileName}${status==='reused'?' · sin reproceso':''}`, total ? done/total : 0));
       state.outputs = (await SSTDB.getAll(SSTDB.stores.outputs)).sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
       for (const doc of documents) { doc.dirty = false; await SSTDB.put(SSTDB.stores.documents, doc); }
+      try { await syncDocumentsToBackend(documents, { silent:true }); } catch (syncError) { console.warn('Sincronización del lote:', syncError); }
       state.lastCacheStats = { generated: result.generated, reused: result.reused };
       if (result.outputs?.[0]) state.selectedOutputId = result.outputs[0].id;
       await renderAll(); showView('generated');
@@ -1098,54 +1208,186 @@
     else { preview.innerHTML=''; const iframe=document.createElement('iframe'); iframe.title='Vista previa'; iframe.srcdoc=out.previewHtml; preview.appendChild(iframe); }
   }
 
+  function emailFormats() {
+    return state.emailFormat === 'Ambos' ? ['PDF','Word'] : [state.emailFormat === 'Word' ? 'Word' : 'PDF'];
+  }
+
+  function emailTemplateContext(items = []) {
+    const names = items.map((x) => x.doc?.data?.nombre || x.output?.personName || x.doc?.fileName || '').filter(Boolean);
+    if (state.emailMode === 'common') {
+      return {
+        nombre: items.length === 1 ? (names[0] || 'el colaborador') : `${items.length} documentos seleccionados`,
+        identificacion: items.length === 1 ? String(items[0]?.doc?.data?.identificacion || '') : '',
+        cantidad: String(items.length),
+        nombres: names.join(', '),
+        fecha: SSTUtils.formatDateEs(SSTUtils.todayIso())
+      };
+    }
+    return items[0]?.doc?.data || {};
+  }
+
+  function applyEmailTemplate(text, data) {
+    let source = String(text || '');
+    if (state.emailMode === 'common') {
+      if (source === String(APP_CONFIG.emailSubject || '')) source = String(APP_CONFIG.emailBulkSubject || source);
+      if (source === String(APP_CONFIG.emailBody || '')) source = String(APP_CONFIG.emailBulkBody || source);
+    }
+    const base = SSTUtils.template(source, data || {});
+    return String(base)
+      .replaceAll('{cantidad}', String(data?.cantidad ?? ''))
+      .replaceAll('{nombres}', String(data?.nombres ?? ''))
+      .replaceAll('{fecha}', String(data?.fecha ?? SSTUtils.formatDateEs(SSTUtils.todayIso())));
+  }
+
+  function ensureEmailTemplateForMode() {
+    const subject = $('emailSubject').value;
+    const body = $('emailBody').value;
+    if (state.emailMode === 'common') {
+      if (subject === String(APP_CONFIG.emailSubject || '')) $('emailSubject').value = String(APP_CONFIG.emailBulkSubject || subject);
+      if (body === String(APP_CONFIG.emailBody || '')) $('emailBody').value = String(APP_CONFIG.emailBulkBody || body);
+    } else {
+      if (subject === String(APP_CONFIG.emailBulkSubject || '')) $('emailSubject').value = String(APP_CONFIG.emailSubject || subject);
+      if (body === String(APP_CONFIG.emailBulkBody || '')) $('emailBody').value = String(APP_CONFIG.emailBody || body);
+    }
+  }
+
+  function syncEmailModeUi() {
+    qsa('[data-email-mode]').forEach((b) => b.classList.toggle('active', b.dataset.emailMode === state.emailMode));
+    qsa('[data-email-format]').forEach((b) => b.classList.toggle('active', b.dataset.emailFormat === state.emailFormat));
+    $('emailCommonToWrap').classList.toggle('hidden', state.emailMode !== 'common');
+    qsa('.recipient-row').forEach((row) => row.classList.toggle('common-mode', state.emailMode === 'common'));
+    $('emailAttachmentSummary').textContent = `${state.emailFormat} · ${state.emailMode === 'common' ? 'destinatario único' : 'envío individual'}`;
+  }
+
   function renderEmail() {
+    ensureEmailTemplateForMode();
     const generatedDocs = state.outputs.map((o) => ({ o, d: state.documents.find((d) => d.id === o.id) })).filter((x) => x.d);
-    $('emailRecipients').innerHTML = generatedDocs.length ? generatedDocs.map(({o,d}) => `<label class="recipient-row"><input type="checkbox" class="email-select" data-email-id="${o.id}"><div class="recipient-fields"><div><strong>${SSTUtils.escapeHtml(d.data?.nombre || o.personName)}</strong><small>${SSTUtils.escapeHtml(o.filename)}</small></div><input class="email-to" data-email-to="${o.id}" type="email" value="${SSTUtils.escapeHtml(d.data?.correo || '')}" placeholder="correo@empresa.com"></div></label>`).join('') : '<div class="empty-state compact"><span>✉</span><strong>No hay documentos generados</strong></div>';
+    const validIds = new Set(generatedDocs.map((x) => x.o.id));
+    state.selectedEmailIds = new Set([...state.selectedEmailIds].filter((id) => validIds.has(id)));
+    $('emailRecipients').innerHTML = generatedDocs.length ? generatedDocs.map(({o,d}) => `<label class="recipient-row ${state.emailMode==='common'?'common-mode':''}"><input type="checkbox" class="email-select" data-email-id="${o.id}" ${state.selectedEmailIds.has(o.id)?'checked':''}><div class="recipient-fields"><div><strong>${SSTUtils.escapeHtml(d.data?.nombre || o.personName)}</strong><small>${SSTUtils.escapeHtml(d.fileName || o.sourceName || o.filename)}</small><span class="recipient-file-format">${SSTUtils.escapeHtml(state.emailFormat)}</span></div><input class="email-to" data-email-to="${o.id}" type="email" value="${SSTUtils.escapeHtml(d.data?.correo || '')}" placeholder="correo@empresa.com"></div></label>`).join('') : '<div class="empty-state compact"><span>✉</span><strong>No hay documentos generados</strong></div>';
+    syncEmailModeUi();
     updateEmailPreview();
   }
 
   function selectedEmailItems() {
-    return qsa('.email-select:checked').map((cb) => {
-      const id=cb.dataset.emailId, output=state.outputs.find((o)=>o.id===id), doc=state.documents.find((d)=>d.id===id); const input=document.querySelector(`[data-email-to="${CSS.escape(id)}"]`);
-      return output&&doc ? { output, doc, to:input?.value.trim().toLowerCase() || '' } : null;
+    return [...state.selectedEmailIds].map((id) => {
+      const output=state.outputs.find((o)=>o.id===id), doc=state.documents.find((d)=>d.id===id); const input=document.querySelector(`[data-email-to="${CSS.escape(id)}"]`);
+      return output&&doc ? { output, doc, to:input?.value.trim().toLowerCase() || String(doc.data?.correo || '').trim().toLowerCase() } : null;
     }).filter(Boolean);
   }
 
   function updateEmailPreview() {
     const items = selectedEmailItems();
-    $('emailPreviewCards').innerHTML = items.map(({doc,output,to}) => `<div class="email-preview-card"><strong>${SSTUtils.escapeHtml(doc.data?.nombre || output.personName)} · ${SSTUtils.escapeHtml(to || 'Sin correo')}</strong><small>${SSTUtils.escapeHtml(SSTUtils.template($('emailSubject').value,doc.data))} · ${SSTUtils.escapeHtml(output.filename)}</small></div>`).join('');
+    $('emailSelectionCount').textContent = `${items.length} seleccionado${items.length===1?'':'s'}`;
+    $('btnSelectAllEmail').textContent = state.outputs.length && items.length === state.outputs.length ? 'Quitar selección' : 'Seleccionar todos';
+    syncEmailModeUi();
+    const formats = emailFormats();
+    if (!items.length) {
+      $('emailPreviewCards').innerHTML = '<div class="empty-state compact"><span>✉</span><strong>Selecciona los documentos que deseas enviar</strong></div>';
+      return;
+    }
+    if (state.emailMode === 'common') {
+      const to = $('emailCommonTo').value.trim().toLowerCase();
+      const ctx = emailTemplateContext(items);
+      const names = items.slice(0,8).map(({doc}) => `<li>${SSTUtils.escapeHtml(doc.data?.nombre || doc.fileName)} · ${formats.join(' + ')}</li>`).join('');
+      const more = items.length > 8 ? `<li>+ ${items.length-8} documento(s) adicional(es)</li>` : '';
+      $('emailPreviewCards').innerHTML = `<div class="email-preview-card common"><strong>${SSTUtils.escapeHtml(to || 'Destinatario común pendiente')} · ${items.length} documento(s)</strong><small>${SSTUtils.escapeHtml(applyEmailTemplate($('emailSubject').value,ctx))}</small><span class="attachment-line">${formats.length * items.length} adjunto(s) previstos · ${SSTUtils.escapeHtml(formats.join(' + '))}</span><ul class="email-preview-list">${names}${more}</ul></div>`;
+      return;
+    }
+    $('emailPreviewCards').innerHTML = items.map(({doc,output,to}) => `<div class="email-preview-card"><strong>${SSTUtils.escapeHtml(doc.data?.nombre || output.personName)} · ${SSTUtils.escapeHtml(to || 'Sin correo')}</strong><small>${SSTUtils.escapeHtml(applyEmailTemplate($('emailSubject').value,doc.data))}</small><span class="attachment-line">${SSTUtils.escapeHtml(formats.join(' + '))}</span></div>`).join('');
+  }
+
+  async function buildEmailAttachments(items, formats) {
+    const result = [];
+    for (let i=0; i<items.length; i++) {
+      const {doc} = items[i];
+      for (const format of formats) {
+        $('btnSendEmails').textContent = `Preparando ${i+1}/${items.length} · ${format}…`;
+        const generated = await SSTGenerator.generateForEmail(doc, format);
+        const output = generated.output;
+        result.push({ doc, output, size:Number(output.blob?.size || 0) });
+      }
+    }
+    return result;
+  }
+
+  function groupEmailAttachments(attachments, maxBytes) {
+    const groups=[]; let current=[], size=0;
+    for (const item of attachments) {
+      if (item.size > maxBytes) throw new Error(`${item.output.filename} supera el tamaño seguro permitido para correo.`);
+      if (current.length && size + item.size > maxBytes) { groups.push(current); current=[]; size=0; }
+      current.push(item); size += item.size;
+    }
+    if (current.length) groups.push(current);
+    return groups;
+  }
+
+  async function serializeAttachments(items) {
+    const out=[];
+    for (const item of items) {
+      const buffer=await item.output.blob.arrayBuffer();
+      out.push({filename:item.output.filename,mime:item.output.mime,base64:SSTUtils.arrayBufferToBase64(buffer)});
+    }
+    return out;
   }
 
   async function sendEmails() {
     if (!state.backendOnline || state.localMode) return toast('Backend requerido', 'Configura Google Apps Script para enviar correos.', 'warn');
-    const items = selectedEmailItems(); if (!items.length) return toast('Selecciona destinatarios', 'Marca al menos un documento.', 'warn');
+    if (!backendVersionCompatible()) return toast('Apps Script desactualizado', `${backendVersionLabel()}. Actualiza Code.gs antes de usar el nuevo módulo de correo.`, 'error', 9000);
+    const items = selectedEmailItems(); if (!items.length) return toast('Selecciona archivos', 'Marca al menos un documento para enviar.', 'warn');
     if (!$('emailConfirm').checked) return toast('Falta confirmación', 'Marca la casilla de revisión antes de enviar.', 'warn');
     const cc=SSTUtils.parseEmails($('emailCc').value), bcc=SSTUtils.parseEmails($('emailBcc').value); const invalidCopies=[...cc,...bcc].filter((x)=>!SSTUtils.validEmail(x));
     if (invalidCopies.length) return toast('Revisa CC/CCO', invalidCopies.join(', '), 'warn');
-    const invalid=items.filter((x)=>!SSTUtils.validEmail(x.to)); if (invalid.length) return toast('Correos inválidos', invalid.map((x)=>x.doc.data?.nombre || x.doc.fileName).join(', '), 'warn');
+    const commonTo=$('emailCommonTo').value.trim().toLowerCase();
+    if (state.emailMode === 'common' && !SSTUtils.validEmail(commonTo)) return toast('Destinatario común inválido','Escribe el correo de la persona que recibirá todos los archivos.','warn');
+    if (state.emailMode === 'individual') {
+      const invalid=items.filter((x)=>!SSTUtils.validEmail(x.to)); if (invalid.length) return toast('Correos inválidos', invalid.map((x)=>x.doc.data?.nombre || x.doc.fileName).join(', '), 'warn');
+    }
     const subjectTpl=$('emailSubject').value.trim(), bodyTpl=$('emailBody').value.trim(); if (!subjectTpl||!bodyTpl) return toast('Mensaje incompleto','El asunto y el cuerpo no pueden estar vacíos.','warn');
+    const formats=emailFormats();
     $('btnSendEmails').disabled=true; let ok=0; const errors=[];
     try {
-      for (let i=0;i<items.length;i++) {
-        const {output,doc,to}=items[i]; $('btnSendEmails').textContent=`Enviando ${i+1} de ${items.length}…`;
-        try {
-          const buffer=await output.blob.arrayBuffer();
-          const response=await SSTBackend.call('sendEmail',{to,cc,bcc,subject:SSTUtils.template(subjectTpl,doc.data),body:SSTUtils.template(bodyTpl,doc.data),attachment:{filename:output.filename,mime:output.mime,base64:SSTUtils.arrayBufferToBase64(buffer)},sourceFile:doc.fileName,personName:doc.data?.nombre || ''},{timeout:90000});
-          ok++; if (response?.history) state.emailHistory.unshift(response.history);
-        } catch (error) { errors.push(`${doc.data?.nombre || doc.fileName}: ${error.message}`); }
+      const attachments = await buildEmailAttachments(items, formats);
+      if (state.emailMode === 'common') {
+        const maxBytes = Math.max(1, Number(APP_CONFIG.maxEmailRawBatchMb || 14)) * 1024 * 1024;
+        const groups = groupEmailAttachments(attachments, maxBytes);
+        const ctx = emailTemplateContext(items);
+        for (let i=0;i<groups.length;i++) {
+          $('btnSendEmails').textContent=`Enviando paquete ${i+1} de ${groups.length}…`;
+          try {
+            const list = await serializeAttachments(groups[i]);
+            const subjectBase=applyEmailTemplate(subjectTpl,ctx);
+            const subject=groups.length>1 ? `${subjectBase} · paquete ${i+1}/${groups.length}` : subjectBase;
+            const response=await SSTBackend.call('sendEmail',{to:commonTo,cc,bcc,subject,body:applyEmailTemplate(bodyTpl,ctx),attachments:list,sourceFile:items.map((x)=>x.doc.fileName).join(' | '),personName:items.length===1?(items[0].doc.data?.nombre||''):`${items.length} documentos seleccionados`},{timeout:150000});
+            ok++; if (response?.history) state.emailHistory.unshift(response.history);
+          } catch (error) { errors.push(`Paquete ${i+1}: ${error.message}`); }
+        }
+      } else {
+        const byDoc = new Map();
+        for (const attachment of attachments) (byDoc.get(attachment.doc.id) || (byDoc.set(attachment.doc.id,[]), byDoc.get(attachment.doc.id))).push(attachment);
+        for (let i=0;i<items.length;i++) {
+          const {doc,to}=items[i]; $('btnSendEmails').textContent=`Enviando ${i+1} de ${items.length}…`;
+          try {
+            const list=await serializeAttachments(byDoc.get(doc.id) || []);
+            const response=await SSTBackend.call('sendEmail',{to,cc,bcc,subject:applyEmailTemplate(subjectTpl,doc.data),body:applyEmailTemplate(bodyTpl,doc.data),attachments:list,sourceFile:doc.fileName,personName:doc.data?.nombre || ''},{timeout:120000});
+            ok++; if (response?.history) state.emailHistory.unshift(response.history);
+          } catch (error) { errors.push(`${doc.data?.nombre || doc.fileName}: ${error.message}`); }
+        }
       }
-      await SSTDB.setSetting('emailSubject', subjectTpl); await SSTDB.setSetting('emailBody', bodyTpl);
+      await SSTDB.setSetting('emailSubject', subjectTpl); await SSTDB.setSetting('emailBody', bodyTpl); await SSTDB.setSetting('emailMode', state.emailMode); await SSTDB.setSetting('emailAttachmentFormat', state.emailFormat); await SSTDB.setSetting('emailCommonTo', commonTo);
       renderDashboard(); renderControlTable(); $('emailConfirm').checked=false;
-      if (ok) toast('Envío completado', `${ok} de ${items.length} correo(s) enviados.`, 'success', 6500); if (errors.length) toast('Algunos correos fallaron', errors.join(' | '), 'error', 9000);
-    } finally { $('btnSendEmails').disabled=false; $('btnSendEmails').textContent='Confirmar y enviar correos'; }
+      if (ok) toast('Envío completado', state.emailMode==='common' ? `${ok} paquete(s) enviados a ${commonTo}.` : `${ok} de ${items.length} correo(s) enviados.`, 'success', 7000); if (errors.length) toast('Algunos correos fallaron', errors.join(' | '), 'error', 10000);
+    } catch (error) {
+      console.error(error); toast('No se pudo preparar el envío', error.message, 'error', 9000);
+    } finally { $('btnSendEmails').disabled=false; $('btnSendEmails').textContent='Confirmar y enviar'; }
   }
 
   function renderControlTable() {
     const pill=(text,type='')=>`<span class="table-pill ${type}">${SSTUtils.escapeHtml(text)}</span>`;
     let headers=[], rows=[];
     if (state.controlTab==='validation') {
-      headers=['PDF','Trabajador','Motor','Calidad','Campos a revisar','Exámenes','Recomendaciones','Pendientes','Versión'];
-      rows=state.documents.map((d)=>[d.fileName,d.data?.nombre||'',d.data?.modo_validacion||'Motor local',d.data?.calidad_extraccion||'—',(d.data?.campos_revision||[]).join(', '),(d.data?.examenes_lista||[]).length,(d.data?.recomendaciones_lista||[]).length,(d.data?.recomendaciones_pendientes_revision||[]).length,d.pipelineVersion||'Anterior']);
+      headers=['PDF','Trabajador','Motor','Calidad','Apps Script','Campos a revisar','Exámenes','Recomendaciones','Pendientes','Versión'];
+      rows=state.documents.map((d)=>[d.fileName,d.data?.nombre||'',d.data?.modo_validacion||'Motor local',d.data?.calidad_extraccion||'—',d.remoteSyncStatus==='synced'?'Sincronizado':(d.remoteSyncStatus==='error'?'Error de sincronización':'Pendiente'),(d.data?.campos_revision||[]).join(', '),(d.data?.examenes_lista||[]).length,(d.data?.recomendaciones_lista||[]).length,(d.data?.recomendaciones_pendientes_revision||[]).length,d.pipelineVersion||'Anterior']);
     } else if (state.controlTab==='package') {
       headers=['Trabajador','PDF origen','Estado','Archivo final','Consecutivo'];
       rows=state.documents.map((d)=>{const o=state.outputs.find((x)=>x.id===d.id);return[d.data?.nombre||'Sin nombre',d.fileName,o?(d.dirty?'Desactualizado':'Listo'):'Pendiente',o?.filename||'—',o?.consecutive||'—'];});
@@ -1155,7 +1397,7 @@
       headers=['Fecha','Trabajador','Destinatario','CC','CCO','Asunto','Archivo','Estado','Detalle']; rows=state.emailHistory.slice(0,200).map((h)=>[h.date||h.fecha||h.createdAt||'',h.worker||h.trabajador||h.personName||'',h.to||h.destinatario||'',h.cc||'',h.bcc||h.cco||'',h.subject||h.asunto||'',h.file||h.archivo||'',h.status||h.estado||'',h.detail||h.detalle||'']);
     }
     if (!rows.length) { $('controlTable').innerHTML='<div class="empty-state compact"><span>▤</span><strong>Sin registros para mostrar</strong></div>'; return; }
-    $('controlTable').innerHTML=`<table class="data-table"><thead><tr>${headers.map((h)=>`<th>${SSTUtils.escapeHtml(h)}</th>`).join('')}</tr></thead><tbody>${rows.map((row)=>`<tr>${row.map((v,i)=>`<td>${(headers[i]==='Estado'||headers[i]==='Motor'||headers[i]==='Calidad')?pill(String(v),/listo|enviado|ia|alta/i.test(String(v))?'ok':(/error|desactualizado|revisar/i.test(String(v))?'error':'warn')):SSTUtils.escapeHtml(v)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+    $('controlTable').innerHTML=`<table class="data-table"><thead><tr>${headers.map((h)=>`<th>${SSTUtils.escapeHtml(h)}</th>`).join('')}</tr></thead><tbody>${rows.map((row)=>`<tr>${row.map((v,i)=>`<td>${(headers[i]==='Estado'||headers[i]==='Motor'||headers[i]==='Calidad'||headers[i]==='Apps Script')?pill(String(v),/listo|enviado|ia|alta/i.test(String(v))?'ok':(/error|desactualizado|revisar/i.test(String(v))?'error':'warn')):SSTUtils.escapeHtml(v)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
   }
 
   async function syncSharedAssets() {
@@ -1210,7 +1452,13 @@
       const url=SSTBackend.normalizeUrl($(inputId).value); if (!url) throw new Error('Ingresa la URL del backend.');
       await SSTDB.setSetting('backendUrl',url); $('setupBackendUrl').value=url; $('settingsBackendUrl').value=url;
       const ready=await SSTBackend.setUrl(url); if (!ready) throw new Error(SSTBackend.lastError || 'La Web App no respondió. Verifica que esté implementada como “Cualquiera” y uses la URL /exec.');
-      state.backendInfo=await SSTBackend.ping(); setBackendUi(true); toast('Backend conectado',state.backendInfo.message||'Google Apps Script está listo.','success'); return true;
+      state.backendInfo=await SSTBackend.ping(); setBackendUi(true);
+      if (!backendVersionCompatible()) {
+        $('settingsBackendStatus').textContent='Actualizar Apps Script'; $('settingsBackendStatus').className='status-badge warn';
+        if ($('backendDiagnosticsDetail')) $('backendDiagnosticsDetail').textContent = `${backendVersionLabel()}. El frontend puede conectar, pero la sincronización de certificados no funcionará hasta publicar la V10.6 del backend.`;
+        toast('Backend conectado pero desactualizado', backendVersionLabel(), 'warn', 9000);
+      } else toast('Backend conectado',`${state.backendInfo.message||'Google Apps Script está listo.'} · ${state.backendInfo.backendVersion}`,'success');
+      return true;
     } catch (error) { setBackendUi(false,error.message); toast('No se pudo conectar',error.message,'error',7000); return false; }
   }
 
@@ -1294,17 +1542,17 @@
     $('documentSearch').addEventListener('input',renderDocumentList); $('documentList').addEventListener('click',async(e)=>{const check=e.target.closest('.batch-select');if(check){e.stopPropagation();const id=check.dataset.batchId;check.checked?state.selectedBatchIds.add(id):state.selectedBatchIds.delete(id);renderBatchSelectionSummary();return;}const del=e.target.closest('[data-delete-doc]');if(del){e.preventDefault();e.stopPropagation();await deleteDocumentById(del.dataset.deleteDoc);return;}const item=e.target.closest('[data-doc-id]');if(item){state.selectedDocId=item.dataset.docId;renderDocumentList();renderEditor();}}); $('recentDocuments').addEventListener('click',(e)=>{const item=e.target.closest('[data-dashboard-doc]');if(item){state.selectedDocId=item.dataset.dashboardDoc;showView('documents');renderDocumentList();renderEditor();}});
     ['fieldName','fieldId','fieldEmail','fieldRole','fieldExamType','fieldDate','fieldPlace','fieldSurveillance','fieldObservations','fieldReferrals','fieldRestrictions','fieldExams','fieldPending'].forEach((id)=>$(id).addEventListener('input',syncEditorToState));
     $('recommendationGroups').addEventListener('input',syncEditorToState); $('recommendationGroups').addEventListener('click',(e)=>{if(e.target.classList.contains('remove-group')){e.target.closest('.recommendation-card').remove();syncEditorToState();}}); $('btnAddRecommendationGroup').addEventListener('click',()=>{const wrapper=document.createElement('div');wrapper.className='recommendation-card';wrapper.innerHTML='<div class="recommendation-card-head"><input class="rec-exam" value="Nuevo examen" aria-label="Examen"><button class="remove-group" type="button">×</button></div><textarea class="rec-text" rows="4" placeholder="Detalle completo del examen. Puedes separar hallazgos por línea; al generar se integrarán en un solo párrafo."></textarea>';$('recommendationGroups').appendChild(wrapper);wrapper.querySelector('.rec-exam').select();syncEditorToState();});
-    $('btnDeleteSelected').addEventListener('click',()=>{const d=selectedDocument();if(d)deleteDocumentById(d.id);else toast('Sin selección','Selecciona un certificado.','warn');}); $('btnResolveQualityReview')?.addEventListener('click',async()=>{const doc=selectedDocument();if(!doc)return;syncEditorToState();doc.data.campos_revision=[];doc.data.revision_manual_at=new Date().toISOString();doc.dirty=true;doc.updatedAt=doc.data.revision_manual_at;await SSTDB.put(SSTDB.stores.documents,doc);renderEditor();renderDocumentList();renderDashboard();renderControlTable();toast('Revisión manual registrada','El control de calidad quedó marcado como resuelto para este certificado.','success');}); $('btnValidateAiSelected').addEventListener('click',validateSelectedWithAi); $('btnGenerateSelected').addEventListener('click',generateSelected); $('btnGenerateSelectedBatch')?.addEventListener('click',generateSelectedBatch); $('btnGenerateAll').addEventListener('click',generateAll); $('btnGenerateAll2').addEventListener('click',generateAll); $('btnSelectAllDocs')?.addEventListener('click',()=>{state.documents.forEach((d)=>state.selectedBatchIds.add(d.id));renderDocumentList();}); $('btnClearDocSelection')?.addEventListener('click',()=>{state.selectedBatchIds.clear();renderDocumentList();}); $('btnPreviewOriginal').addEventListener('click',()=>openOriginalModal(selectedDocument())); $('btnClearLoaded').addEventListener('click',clearLoadedDocuments);
+    $('btnDeleteSelected').addEventListener('click',()=>{const d=selectedDocument();if(d)deleteDocumentById(d.id);else toast('Sin selección','Selecciona un certificado.','warn');}); $('btnResolveQualityReview')?.addEventListener('click',async()=>{const doc=selectedDocument();if(!doc)return;syncEditorToState();doc.data.campos_revision=[];doc.data.revision_manual_at=new Date().toISOString();doc.dirty=true;doc.updatedAt=doc.data.revision_manual_at;await SSTDB.put(SSTDB.stores.documents,doc);try{await syncDocumentsToBackend([doc],{silent:true});}catch(syncError){doc.remoteSyncStatus='error';doc.remoteSyncError=syncError.message;await SSTDB.put(SSTDB.stores.documents,doc);}renderEditor();renderDocumentList();renderDashboard();renderControlTable();toast('Revisión manual registrada','El control de calidad quedó marcado como resuelto para este certificado.','success');}); $('btnValidateAiSelected').addEventListener('click',validateSelectedWithAi); $('btnGenerateSelected').addEventListener('click',generateSelected); $('btnGenerateSelectedBatch')?.addEventListener('click',generateSelectedBatch); $('btnGenerateAll').addEventListener('click',generateAll); $('btnGenerateAll2').addEventListener('click',generateAll); $('btnSelectAllDocs')?.addEventListener('click',()=>{state.documents.forEach((d)=>state.selectedBatchIds.add(d.id));renderDocumentList();}); $('btnClearDocSelection')?.addEventListener('click',()=>{state.selectedBatchIds.clear();renderDocumentList();}); $('btnPreviewOriginal').addEventListener('click',()=>openOriginalModal(selectedDocument())); $('btnClearLoaded').addEventListener('click',clearLoadedDocuments);
     $('originalList').addEventListener('click',async(e)=>{const del=e.target.closest('[data-delete-doc]');if(del){e.preventDefault();e.stopPropagation();await deleteDocumentById(del.dataset.deleteDoc);return;}const item=e.target.closest('[data-original-id]');if(item){state.selectedOriginalId=item.dataset.originalId;state.originalPage=1;renderOriginals();}}); $('btnPrevPage').addEventListener('click',()=>{if(state.originalPage>1){state.originalPage--;renderOriginals();}}); $('btnNextPage').addEventListener('click',()=>{const d=state.documents.find((x)=>x.id===state.selectedOriginalId);if(d&&state.originalPage<(d.pageCount||1)){state.originalPage++;renderOriginals();}}); $('btnDownloadOriginal').addEventListener('click',()=>{const d=state.documents.find((x)=>x.id===state.selectedOriginalId);if(d)SSTUtils.downloadBlob(d.blob,`ORIGINAL_${d.fileName}`);}); $('btnIndexOriginals').addEventListener('click',()=>{renderOriginals();toast('Índice actualizado',`${state.documents.length} PDF disponibles sin reprocesar.`,'success');});
     $('generatedList').addEventListener('click',(e)=>{const item=e.target.closest('[data-output-id]');if(item){state.selectedOutputId=item.dataset.outputId;renderGenerated();}}); $('btnDownloadGenerated').addEventListener('click',()=>{const o=selectedOutput();if(o)SSTUtils.downloadBlob(o.blob,o.filename);}); $('btnDownloadZip').addEventListener('click',async()=>{if(!state.outputs.length)return toast('Sin archivos','No hay documentos para comprimir.','warn');try{const zip=await SSTGenerator.makeZip(state.outputs);SSTUtils.downloadBlob(zip,`Lote_SST_JER_SA_${SSTUtils.todayIso().replaceAll('-','')}.zip`);}catch(e){toast('No se pudo crear el ZIP',e.message,'error');}});
-    $('emailRecipients').addEventListener('input',(e)=>{if(e.target.matches('.email-to')){const id=e.target.dataset.emailTo,d=state.documents.find((x)=>x.id===id);if(d){d.data.correo=e.target.value.trim();d.updatedAt=new Date().toISOString();SSTDB.put(SSTDB.stores.documents,d);}}updateEmailPreview();}); $('emailRecipients').addEventListener('change',updateEmailPreview); $('emailSubject').addEventListener('input',updateEmailPreview); $('emailBody').addEventListener('input',updateEmailPreview); $('btnSelectAllEmail').addEventListener('click',()=>{qsa('.email-select').forEach((x)=>x.checked=true);updateEmailPreview();}); $('btnSendEmails').addEventListener('click',sendEmails);
+    $('emailRecipients').addEventListener('input',(e)=>{if(e.target.matches('.email-to')){const id=e.target.dataset.emailTo,d=state.documents.find((x)=>x.id===id);if(d){d.data.correo=e.target.value.trim();d.updatedAt=new Date().toISOString();SSTDB.put(SSTDB.stores.documents,d);}}updateEmailPreview();}); $('emailRecipients').addEventListener('change',(e)=>{if(e.target.matches('.email-select')){const id=e.target.dataset.emailId;e.target.checked?state.selectedEmailIds.add(id):state.selectedEmailIds.delete(id);}updateEmailPreview();}); $('emailSubject').addEventListener('input',updateEmailPreview); $('emailBody').addEventListener('input',updateEmailPreview); $('emailCommonTo').addEventListener('input',updateEmailPreview); $('btnSelectAllEmail').addEventListener('click',()=>{const allSelected=state.outputs.length&&state.selectedEmailIds.size===state.outputs.length;state.selectedEmailIds=allSelected?new Set():new Set(state.outputs.map((o)=>o.id));renderEmail();}); qsa('[data-email-mode]').forEach((b)=>b.addEventListener('click',async()=>{state.emailMode=b.dataset.emailMode;await SSTDB.setSetting('emailMode',state.emailMode);renderEmail();})); qsa('[data-email-format]').forEach((b)=>b.addEventListener('click',async()=>{state.emailFormat=b.dataset.emailFormat;await SSTDB.setSetting('emailAttachmentFormat',state.emailFormat);renderEmail();})); $('btnSendEmails').addEventListener('click',sendEmails);
     qsa('[data-control-tab]').forEach((b)=>b.addEventListener('click',()=>{state.controlTab=b.dataset.controlTab;qsa('[data-control-tab]').forEach((x)=>x.classList.toggle('active',x===b));renderControlTable();}));
-    $('btnSettingsTestBackend').addEventListener('click',()=>saveBackendUrl('settingsBackendUrl')); $('btnSettingsSaveBackend').addEventListener('click',async()=>{if(await saveBackendUrl('settingsBackendUrl'))await showAuthIfNeeded();}); $('btnSaveAi').addEventListener('click',saveAiSettings); $('btnTestAi')?.addEventListener('click',async()=>{const ready=await ensureAiReady({notify:true});if(ready){toast('IA lista','Gemini está autorizado. Se validarán automáticamente los PDF pendientes.','success');await autoAuditPendingDocuments();}}); $('btnRefreshConsecutive').addEventListener('click',refreshBackendDiagnostics); $('btnSaveConsecutive').addEventListener('click',saveConsecutiveSettings);
+    $('btnSettingsTestBackend').addEventListener('click',()=>saveBackendUrl('settingsBackendUrl')); $('btnBackendWriteProbe')?.addEventListener('click',testBackendWrite); $('btnSettingsSaveBackend').addEventListener('click',async()=>{if(await saveBackendUrl('settingsBackendUrl'))await showAuthIfNeeded();}); $('btnSaveAi').addEventListener('click',saveAiSettings); $('btnTestAi')?.addEventListener('click',async()=>{const ready=await ensureAiReady({notify:true});if(ready){toast('IA lista','Gemini está autorizado. Se validarán automáticamente los PDF pendientes.','success');await autoAuditPendingDocuments();}}); $('btnRefreshConsecutive').addEventListener('click',refreshBackendDiagnostics); $('btnSaveConsecutive').addEventListener('click',saveConsecutiveSettings);
     $('btnUploadTemplate').addEventListener('click',()=>$('templateInput').click()); $('templateInput').addEventListener('change',async(e)=>{try{await uploadAsset('template',e.target.files[0]);}catch(error){toast('Plantilla no válida',error.message,'error',8500);}finally{e.target.value='';}}); $('btnRemoveTemplate').addEventListener('click',async()=>{await SSTDB.delete(SSTDB.stores.assets,'template');if(state.backendOnline&&!state.localMode&&state.user?.role==='admin'){try{await SSTBackend.call('removeSharedAsset',{kind:'template'});}catch(e){toast('Plantilla local eliminada',e.message,'warn');}}await invalidateGeneratedOutputs('Se restauró la plantilla base');await renderAssetSettings();toast('Plantilla restaurada','Se utilizará la plantilla base incluida en todas las nuevas vistas previas.','success');});
     $('btnUploadSignature').addEventListener('click',()=>$('signatureInput').click()); $('signatureInput').addEventListener('change',async(e)=>{try{await uploadAsset('signature',e.target.files[0]);}catch(error){toast('No se pudo guardar la firma',error.message,'error');}finally{e.target.value='';}}); $('btnRemoveSignature').addEventListener('click',async()=>{await SSTDB.delete(SSTDB.stores.assets,'signature');if(state.backendOnline&&!state.localMode&&state.user?.role==='admin'){try{await SSTBackend.call('removeSharedAsset',{kind:'signature'});}catch(e){toast('Firma local eliminada',e.message,'warn');}}await renderAssetSettings();toast('Firma eliminada','','success');});
     $('btnSavePreferences').addEventListener('click',async()=>{await SSTDB.setSetting('outputFormat',$('settingsOutputFormat').value);await SSTDB.setSetting('ocrEnabled',$('toggleOcr').checked);toast('Preferencias guardadas','Se aplicarán a las próximas cargas y generaciones.','success');renderDashboard();});
     $('btnChangePasswordLogged').addEventListener('click',async()=>{if(state.localMode)return toast('Modo local','No hay una cuenta remota que modificar.','warn');try{await SSTBackend.call('changePassword',{oldPassword:$('settingsOldPassword').value,newPassword:$('settingsNewPassword').value});$('settingsOldPassword').value='';$('settingsNewPassword').value='';toast('Contraseña actualizada','','success');}catch(e){toast('No se pudo cambiar la contraseña',e.message,'error');}});
-    $('btnClearLocalData').addEventListener('click',async()=>{if(!confirm('Esto eliminará PDF, salidas, plantilla, firma e historial almacenados en ESTE navegador. La cuenta y el backend no se eliminan. ¿Continuar?'))return;await SSTDB.clearAllLocalData();state.documents=[];state.outputs=[];state.emailHistory=[];state.selectedDocId=null;state.selectedOutputId=null;state.selectedOriginalId=null;state.selectedBatchIds.clear();await renderAll();await renderAssetSettings();toast('Caché local borrada','El portal quedó limpio en este navegador.','success');});
+    $('btnClearLocalData').addEventListener('click',async()=>{if(!confirm('Esto eliminará PDF, salidas, plantilla, firma e historial almacenados en ESTE navegador. La cuenta y el backend no se eliminan. ¿Continuar?'))return;await SSTDB.clearAllLocalData();state.documents=[];state.outputs=[];state.emailHistory=[];state.selectedDocId=null;state.selectedOutputId=null;state.selectedOriginalId=null;state.selectedBatchIds.clear();state.selectedEmailIds.clear();await renderAll();await renderAssetSettings();toast('Caché local borrada','El portal quedó limpio en este navegador.','success');});
   }
 
   async function showAuthIfNeeded(){ if(!state.user&&!state.localMode)await showAuth(); }

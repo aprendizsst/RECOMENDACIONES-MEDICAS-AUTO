@@ -272,10 +272,29 @@
         </section>
 
         <section class="view-section" data-view-panel="email">
-          <div class="toolbar-row"><div><span class="eyebrow">DISTRIBUCIÓN</span><h2>Correo</h2><p>Selecciona destinatarios, edita el mensaje y confirma explícitamente el envío.</p></div><span id="emailBackendBadge" class="status-badge">Backend requerido</span></div>
+          <div class="toolbar-row"><div><span class="eyebrow">DISTRIBUCIÓN</span><h2>Correo</h2><p>Selecciona los documentos, el formato de adjunto y si el envío será individual o consolidado a un único destinatario.</p></div><span id="emailBackendBadge" class="status-badge">Backend requerido</span></div>
           <div class="email-grid">
             <section class="panel">
-              <div class="panel-head"><div><span class="eyebrow">1. DESTINATARIOS</span><h3>Documentos a enviar</h3></div><button id="btnSelectAllEmail" class="link-button">Seleccionar todos</button></div>
+              <div class="panel-head"><div><span class="eyebrow">1. ARCHIVOS</span><h3>Documentos a enviar</h3></div><button id="btnSelectAllEmail" class="link-button">Seleccionar todos</button></div>
+              <div class="email-options-grid">
+                <div class="email-option-block">
+                  <span class="field-label">Modo de envío</span>
+                  <div class="segmented email-segmented" id="emailModeSelector">
+                    <button type="button" class="segmented-btn active" data-email-mode="individual">Cada trabajador</button>
+                    <button type="button" class="segmented-btn" data-email-mode="common">Un destinatario</button>
+                  </div>
+                </div>
+                <div class="email-option-block">
+                  <span class="field-label">Formato del adjunto</span>
+                  <div class="segmented email-segmented" id="emailFormatSelector">
+                    <button type="button" class="segmented-btn active" data-email-format="PDF">PDF</button>
+                    <button type="button" class="segmented-btn" data-email-format="Word">Word</button>
+                    <button type="button" class="segmented-btn" data-email-format="Ambos">PDF + Word</button>
+                  </div>
+                </div>
+              </div>
+              <label id="emailCommonToWrap" class="email-common-recipient hidden"><span>Destinatario común</span><input id="emailCommonTo" type="email" placeholder="responsable@empresa.com" /><small>Todos los archivos seleccionados se enviarán a este correo. Si el peso total supera el límite seguro, el portal los dividirá automáticamente en varios correos.</small></label>
+              <div class="email-selection-summary"><strong id="emailSelectionCount">0 seleccionados</strong><span id="emailAttachmentSummary">PDF</span></div>
               <div id="emailRecipients" class="recipient-list"><div class="empty-state compact"><span>✉</span><strong>No hay documentos generados</strong></div></div>
               <div class="form-grid two compact-grid">
                 <label><span>CC</span><input id="emailCc" placeholder="correo1@empresa.com; correo2@empresa.com" /></label>
@@ -286,10 +305,10 @@
               <div class="panel-head"><div><span class="eyebrow">2. MENSAJE</span><h3>Plantilla editable</h3></div></div>
               <label><span>Asunto</span><input id="emailSubject" /></label>
               <label><span>Cuerpo del mensaje</span><textarea id="emailBody" rows="12"></textarea></label>
-              <div class="template-help">Puedes usar <code>{nombre}</code> y <code>{identificacion}</code>.</div>
+              <div class="template-help">En envío individual puedes usar <code>{nombre}</code> y <code>{identificacion}</code>. En envío a un único destinatario también puedes usar <code>{cantidad}</code> y <code>{nombres}</code>.</div>
               <div id="emailPreviewCards" class="email-preview-cards"></div>
-              <label class="confirm-check"><input id="emailConfirm" type="checkbox" /><span>Confirmo que revisé destinatarios, copias, asunto, mensaje y adjuntos.</span></label>
-              <button id="btnSendEmails" class="btn primary full">Confirmar y enviar correos</button>
+              <label class="confirm-check"><input id="emailConfirm" type="checkbox" /><span>Confirmo que revisé destinatarios, copias, asunto, mensaje, formato y archivos adjuntos.</span></label>
+              <button id="btnSendEmails" class="btn primary full">Confirmar y enviar</button>
             </section>
           </div>
         </section>
@@ -308,7 +327,7 @@
         <section class="view-section" data-view-panel="settings">
           <div class="toolbar-row"><div><span class="eyebrow">CONFIGURACIÓN</span><h2>Configuración</h2><p>Los archivos locales se guardan en IndexedDB; las credenciales sensibles permanecen en Apps Script.</p></div></div>
           <div class="settings-grid">
-            <section class="panel"><div class="panel-head"><div><span class="eyebrow">SERVICIO SEGURO</span><h3>Google Apps Script</h3></div><span id="settingsBackendStatus" class="status-badge">Sin conexión</span></div><label><span>URL de la Web App</span><input id="settingsBackendUrl" type="url" /></label><div class="button-row"><button id="btnSettingsTestBackend" class="btn secondary">Probar conexión</button><button id="btnSettingsSaveBackend" class="btn primary">Guardar</button></div><p class="help-text">Usa la URL terminada en <code>/exec</code>. El portal usa un canal POST seguro con Google Apps Script para evitar problemas CORS.</p></section>
+            <section class="panel"><div class="panel-head"><div><span class="eyebrow">SERVICIO SEGURO</span><h3>Google Apps Script</h3></div><span id="settingsBackendStatus" class="status-badge">Sin conexión</span></div><label><span>URL de la Web App</span><input id="settingsBackendUrl" type="url" /></label><div class="button-row"><button id="btnSettingsTestBackend" class="btn secondary">Probar conexión</button><button id="btnBackendWriteProbe" class="btn secondary">Probar escritura en Sheets</button><button id="btnSettingsSaveBackend" class="btn primary">Guardar</button></div><p id="backendDiagnosticsDetail" class="help-text">La V10.6 verifica la versión desplegada de Apps Script, registra los certificados procesados y habilita correo con múltiples adjuntos en la hoja <code>DocumentosProcesados</code>.</p><p class="help-text">Usa la URL terminada en <code>/exec</code>. Si Apps Script fue modificado, debes crear una nueva versión de la implementación para que GitHub Pages use ese código.</p></section>
 
             <section class="panel"><div class="panel-head"><div><span class="eyebrow">CONSECUTIVOS</span><h3>Google Sheets</h3></div><span id="consecutiveStatusBadge" class="status-badge">Consultando</span></div><label><span>URL o ID de la hoja de cálculo</span><input id="settingsConsecutiveSpreadsheet" placeholder="https://docs.google.com/spreadsheets/d/.../edit" /></label><label><span>Nombre de la pestaña</span><input id="settingsConsecutiveSheet" value="Consecutivos" /></label><label><span>Prefijo</span><input id="settingsConsecutivePrefix" value="SST" maxlength="16" /></label><div class="button-row"><button id="btnRefreshConsecutive" class="btn secondary">Consultar actual</button><button id="btnSaveConsecutive" class="btn primary">Guardar y validar</button></div><p id="consecutiveStatusDetail" class="help-text">El backend lee el mayor consecutivo directamente desde Sheets y usa bloqueo para evitar duplicados.</p></section>
 
@@ -336,15 +355,15 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script src="https://cdn.jsdelivr.net/pyodide/v0.27.7/full/pyodide.js"></script>
-  <script src="js/config.js?v=20260903-101"></script>
-  <script src="js/utils.js?v=20260903-101"></script>
-  <script src="js/db.js?v=20260903-101"></script>
-  <script src="js/backend.js?v=20260903-101"></script>
-  <script src="js/profile-engine.js?v=20260903-101"></script>
-  <script src="js/parser-bridge.js?v=20260903-101"></script>
-  <script src="js/pdf-service.js?v=20260903-101"></script>
-  <script src="js/docx-engine.js?v=20260903-101"></script>
-  <script src="js/generator.js?v=20260903-101"></script>
-  <script src="js/app.js?v=20260903-101"></script>
+  <script src="js/config.js?v=20260903-106"></script>
+  <script src="js/utils.js?v=20260903-106"></script>
+  <script src="js/db.js?v=20260903-106"></script>
+  <script src="js/backend.js?v=20260903-106"></script>
+  <script src="js/profile-engine.js?v=20260903-106"></script>
+  <script src="js/parser-bridge.js?v=20260903-106"></script>
+  <script src="js/pdf-service.js?v=20260903-106"></script>
+  <script src="js/docx-engine.js?v=20260903-106"></script>
+  <script src="js/generator.js?v=20260903-106"></script>
+  <script src="js/app.js?v=20260903-106"></script>
 </body>
 </html>

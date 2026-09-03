@@ -211,7 +211,8 @@
       return { templateBuffer, validation, docxBuffer };
     }
 
-    async generate(documentRow, formatOverride = null) {
+    async generate(documentRow, formatOverride = null, options = {}) {
+      const persist = options.persist !== false;
       const data = SSTUtils.deepClone(documentRow.data || {});
       await this.ensureConsecutive(documentRow, data);
       documentRow.data.consecutivo = data.consecutivo;
@@ -274,8 +275,13 @@
         templateValidation:prepared.validation,
         documentEngineVersion:SSTDocx.engineVersion || 'template-engine-v10'
       };
-      await SSTDB.put(SSTDB.stores.outputs, output);
+      if (persist) await SSTDB.put(SSTDB.stores.outputs, output);
       return { output, reused:false };
+    }
+
+    async generateForEmail(documentRow, formatOverride) {
+      if (!['PDF','Word'].includes(String(formatOverride))) throw new Error('Formato de correo no soportado. Usa PDF o Word.');
+      return this.generate(documentRow, formatOverride, { persist:false });
     }
 
     async reserveBatchConsecutives(documents) {

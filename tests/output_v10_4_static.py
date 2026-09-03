@@ -16,5 +16,5 @@ assert "recommendationParagraph" in generator
 assert "ctx.setTransform(" not in pdf
 assert "transform, background:'#ffffff'" in pdf
 assert "display:block;text-align:center" in css
-assert "v10.4" in config
-print('OK · V10.4 salida compacta + visor PDF ajustado')
+assert "v10.6" in config
+print('OK · V10.6 conserva salida compacta + visor PDF ajustado')

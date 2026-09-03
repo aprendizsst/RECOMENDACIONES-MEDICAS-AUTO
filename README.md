@@ -1,4 +1,7 @@
-# Portal SST · Recomendaciones Médicas V10.3
+> V10.6 añade correo masivo a un destinatario común, selección de archivos y adjuntos PDF/Word.
+
+# Portal SST · Recomendaciones Médicas · V10.6
+
 
 Aplicación GitHub Pages + Google Apps Script para lectura masiva de conceptos médicos ocupacionales, auditoría multimodal, revisión humana, generación DOCX/PDF, consecutivos compartidos y correo.
 
@@ -107,3 +110,8 @@ El control de calidad ya no compara `tipo_examen` como una cadena literal. El mo
 
 ## Mejora V10.4 · carta compacta y vista previa PDF
 La lista de exámenes ya no imprime estados como `— REALIZADO`. Las recomendaciones se generan como un único párrafo justificado, ordenado por examen y sin omitir detalle clínico. El visor de PDF originales ahora se ajusta al ancho disponible, se recentra correctamente y se vuelve a renderizar cuando cambia el tamaño del panel.
+
+
+## V10.6 · Persistencia Apps Script
+
+Los certificados procesados se sincronizan en `Portal SST - Base de datos / DocumentosProcesados`. La sincronización usa `document_key` para actualizar el mismo PDF sin duplicarlo. Configuración → Google Apps Script incluye una prueba real de escritura. El frontend exige el backend `2026.09.03-v10.6-email-batch`; después de cambiar `Code.gs` se debe publicar una nueva versión de la Web App.
