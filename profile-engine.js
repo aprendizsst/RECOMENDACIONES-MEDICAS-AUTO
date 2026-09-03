@@ -6,9 +6,12 @@
     ['EVALUACION MEDICO OCUPACIONAL DE SEGUIMIENTO O CONTROL','Evaluación médico ocupacional de seguimiento o control'],
     ['EVALUACION MEDICO OCUPACIONAL','Evaluación médico ocupacional'],
     ['ENFASIS OSTEOMUSCULAR','Énfasis osteomuscular'],
+    ['ENFASIS CARDIOVASCULAR','Énfasis cardiovascular'],
     ['OPTOMETRIA','Optometría'], ['VISIOMETRIA','Visiometría'], ['AUDIOMETRIA','Audiometría'],
     ['ESPIROMETRIA','Espirometría'], ['ELECTROCARDIOGRAMA','Electrocardiograma'], ['GLICEMIA','Glicemia'],
-    ['PERFIL LIPIDICO','Perfil lipídico'], ['CUADRO HEMATICO','Cuadro hemático'], ['HEMOGRAMA','Hemograma'],
+    ['PERFIL LIPIDICO','Perfil lipídico'], ['KOH DE UNAS','KOH de uñas'], ['KOH UNAS','KOH de uñas'],
+    ['COPROLOGICO','Coprológico'], ['FROTIS FARINGEO','Frotis faríngeo'],
+    ['CUADRO HEMATICO','Cuadro hemático'], ['HEMOGRAMA','Hemograma'],
     ['PARCIAL DE ORINA','Parcial de orina'], ['PSICOSENSOMETRICO','Psicosensométrico'], ['RAYOS X','Rayos X']
   ];
   const STOP = [
@@ -115,10 +118,34 @@
     return { id:'GENERICO', name:'Formato no catalogado', confidence:.35 };
   }
 
-  function examCanon(value) {
+  function plausibleExamLabel(value) {
+    const raw=clean(value), n=fold(raw);
+    if(!raw || n.length < 3 || n.length > 90) return false;
+    if (STOP.some((s)=>n.includes(fold(s)))) return false;
+    if (/^(REALIZAD[OA]S?|NORMAL|NO APLICA|N A|APTO|SI|NO)$/.test(n)) return false;
+    if (/^(RECOMENDACIONES?|RESULTADO|OBSERVACIONES?|PERMANENTE|TIPO|CONDICIONES|FACTORES|AGENTES)$/.test(n)) return false;
+    // En el formato JER la columna izquierda del bloque clínico es, por definición,
+    // el nombre del examen. Admitimos nombres no catalogados para no perder pruebas
+    // como KOH de uñas, coprológico, frotis faríngeo o futuros exámenes del proveedor.
+    const words=n.split(' ').filter(Boolean);
+    if (words.length > 12) return false;
+    return /[A-Z]/.test(n) && !/[.!?]{2,}/.test(raw);
+  }
+
+  function examCanon(value, structural=false) {
     const n=fold(value); if(!n) return '';
     for(const [key,label] of EXAMS) if(n.includes(key)) return label;
-    if (/^EXAMEN\b/.test(n) && n.split(' ').length <= 9) return normalizeClinicalText(value);
+    if (/^EXAMEN\b/.test(n) && n.split(' ').length <= 12) return normalizeClinicalText(value);
+    if (structural && plausibleExamLabel(value)) return normalizeClinicalText(value);
+    return '';
+  }
+
+  function examStatus(value) {
+    const n=fold(value).replace(/[.:;,-]+$/,'').trim();
+    if (/^REALIZAD[OA]S?$/.test(n)) return 'Realizado';
+    if (/^NORMAL$/.test(n)) return 'Normal';
+    if (/^(NO APLICA|N A)$/.test(n)) return 'No aplica';
+    if (/^APTO$/.test(n)) return 'Apto';
     return '';
   }
 
@@ -131,14 +158,20 @@
       if (endTerms.some((t)=>n.includes(fold(t)))) break;
       const c=cols(line);
       let exam=''; let rest='';
-      if(c.length>=2){ exam=examCanon(c[0]); rest=c.slice(1).join(' '); }
+      if(c.length>=2){ exam=examCanon(c[0], true); rest=c.slice(1).join(' '); }
       if(!exam){
         const colon=line.match(/^(.{3,80}?):\s*(.+)$/); if(colon){ exam=examCanon(colon[1]); rest=colon[2]; }
       }
       if(!exam){ const direct=examCanon(line); if(direct && fold(line).length < 95){ exam=direct; rest=''; } }
-      if(exam){ current=exam; if(!exams.includes(exam))exams.push(exam); map[exam] ||= []; const rn=fold(rest); if(rest){ if(/^(REALIZAD[OA]|NORMAL|NO APLICA|N A|APTO)$/.test(rn)) states[exam]=normalizeClinicalText(rest); else map[exam].push(normalizeClinicalText(rest)); } continue; }
+      if(exam){
+        current=exam; if(!exams.includes(exam))exams.push(exam); map[exam] ||= [];
+        if(rest){ const status=examStatus(rest); if(status) states[exam]=status; else map[exam].push(normalizeClinicalText(rest)); }
+        continue;
+      }
       if(current && line && !endsSection(line)) {
-        const nline=fold(line); if(nline.length>8 && !/^(REALIZAD[OA]|NORMAL|NO APLICA|N A)$/.test(nline)) {
+        const nline=fold(line), status=examStatus(line);
+        if(status){ states[current]=status; continue; }
+        if(nline.length>8) {
           const arr=map[current]||[]; if(arr.length) arr[arr.length-1]=normalizeClinicalText(arr[arr.length-1]+' '+line);
         }
       }
@@ -272,6 +305,7 @@
     out.nombre=clean(out.nombre); out.identificacion=clean(out.identificacion).replace(/\D/g,'') || clean(out.identificacion); out.cargo=clean(out.cargo);
     out.correo=clean(out.correo); out.lugar=clean(out.lugar)||'Tunja'; out.fecha=clean(out.fecha); out.tipo_examen=normalizeClinicalText(out.tipo_examen||'');
     out.examenes_lista=uniq(out.examenes_lista||[]); out.recomendaciones_por_examen=out.recomendaciones_por_examen||{}; out.recomendaciones_lista=uniq(out.recomendaciones_lista||flattenMap(out.recomendaciones_por_examen));
+    out.estado_por_examen=out.estado_por_examen||{};
     out.restricciones_lista=dedupeRestrictions(out.restricciones_lista||[]); out.observaciones=normalizeClinicalText(out.observaciones||''); out.remisiones=clean(out.remisiones)||'No';
     out.vigilancia_lista=uniq(out.vigilancia_lista||[]); out.vigilancia_programa=clean(out.vigilancia_programa)||'Ninguno';
     const missing=[]; if(!out.nombre)missing.push('nombre'); if(!out.cargo)missing.push('cargo'); if(!out.examenes_lista.length)missing.push('exámenes realizados'); if(!out.recomendaciones_lista.length&&!out.restricciones_lista.length)missing.push('recomendaciones/restricciones');

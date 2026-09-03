@@ -327,13 +327,13 @@ function getSharedAsset_(user, payload) {
 function geminiSchema_() {
   return { type:'OBJECT', properties:{
     nombre:{type:'STRING'}, cargo:{type:'STRING'}, identificacion:{type:'STRING'}, correo:{type:'STRING'}, tipo_examen:{type:'STRING'}, lugar:{type:'STRING'}, fecha:{type:'STRING',description:'AAAA-MM-DD o vacío'},
-    examenes_realizados:{type:'ARRAY',items:{type:'STRING'}}, recomendaciones_medicas:{type:'ARRAY',items:{type:'STRING'}}, recomendaciones_por_examen:{type:'ARRAY',items:{type:'OBJECT',properties:{examen:{type:'STRING'},recomendaciones:{type:'ARRAY',items:{type:'STRING'}}},required:['examen','recomendaciones']}},
+    examenes_realizados:{type:'ARRAY',items:{type:'STRING'}}, estados_por_examen:{type:'ARRAY',items:{type:'OBJECT',properties:{examen:{type:'STRING'},estado:{type:'STRING'}},required:['examen','estado']}}, recomendaciones_medicas:{type:'ARRAY',items:{type:'STRING'}}, recomendaciones_por_examen:{type:'ARRAY',items:{type:'OBJECT',properties:{examen:{type:'STRING'},recomendaciones:{type:'ARRAY',items:{type:'STRING'}}},required:['examen','recomendaciones']}},
     restricciones_laborales:{type:'ARRAY',items:{type:'OBJECT',properties:{tipo:{type:'STRING'},texto:{type:'STRING'}},required:['tipo','texto']}},
     vigilancia_programa:{type:'ARRAY',items:{type:'STRING'}}, observaciones:{type:'STRING'}, remisiones:{type:'STRING'}, revision_requerida:{type:'BOOLEAN'},
     evidencias:{type:'OBJECT',properties:{
       recomendaciones:{type:'ARRAY',items:{type:'STRING'}}, restricciones:{type:'ARRAY',items:{type:'STRING'}}, observaciones:{type:'STRING'}, remisiones:{type:'STRING'}, vigilancia_programa:{type:'STRING'}
     },required:['recomendaciones','restricciones','observaciones','remisiones','vigilancia_programa']}
-  }, required:['nombre','cargo','identificacion','correo','tipo_examen','lugar','fecha','examenes_realizados','recomendaciones_medicas','recomendaciones_por_examen','restricciones_laborales','vigilancia_programa','observaciones','remisiones','revision_requerida','evidencias'] };
+  }, required:['nombre','cargo','identificacion','correo','tipo_examen','lugar','fecha','examenes_realizados','estados_por_examen','recomendaciones_medicas','recomendaciones_por_examen','restricciones_laborales','vigilancia_programa','observaciones','remisiones','revision_requerida','evidencias'] };
 }
 
 function geminiPayload_(pdfBase64, prompt) {
@@ -416,7 +416,7 @@ function mergeGeminiAudits_(first, second) {
   ['nombre','cargo','identificacion','correo','tipo_examen','lugar','fecha','observaciones','remisiones'].forEach(function(k){
     if (Object.prototype.hasOwnProperty.call(second, k)) out[k] = second[k];
   });
-  ['examenes_realizados','recomendaciones_medicas','restricciones_laborales','vigilancia_programa','recomendaciones_por_examen'].forEach(function(k){
+  ['examenes_realizados','estados_por_examen','recomendaciones_medicas','restricciones_laborales','vigilancia_programa','recomendaciones_por_examen'].forEach(function(k){
     if (Array.isArray(second[k])) out[k] = second[k];
   });
   if (Object.prototype.hasOwnProperty.call(second, 'revision_requerida')) out.revision_requerida = !!second.revision_requerida;
@@ -464,11 +464,12 @@ FORMATO TIPO B — EXAMEN IZQUIERDA / RECOMENDACIÓN DERECHA:
   ÉNFASIS OSTEOMUSCULAR | REALIZADO
   Resultado esperado: conserva COMPLETAS las dos primeras recomendaciones; «REALIZADO» es estado del tercer examen y no debe convertirse en recomendación.
 - «OPTOMETRÍA | controles preventivos...» => recomendación de Optometría.
-- «GLICEMIA | REALIZADO» => Glicemia sí es examen realizado, pero «REALIZADO» NO es recomendación.
+- «GLICEMIA | REALIZADO» => Glicemia sí es examen realizado, pero «REALIZADO» NO es recomendación. Debe aparecer también en estados_por_examen como {examen:"Glicemia", estado:"Realizado"}.
+- La misma regla aplica a cualquier examen, incluso si su nombre no está en ejemplos previos: PERFIL LIPÍDICO, KOH DE UÑAS, COPROLÓGICO, FROTIS FARÍNGEO, ÉNFASIS CARDIOVASCULAR, ÉNFASIS OSTEOMUSCULAR y futuros nombres del proveedor.
 - Si la recomendación se parte en varias líneas visuales, une todas esas líneas a la misma fila/examen hasta que empiece otro examen o una nueva sección. No pierdas palabras por saltos de línea.
 
 REGLAS ESTRICTAS:
-1. RECOMENDACIONES POR EXAMEN: en el formato B relaciona por misma fila/celda, encabezado inequívoco o prefijo «Examen: recomendación». En el formato A permite relación semántica FUERTE según las reglas anteriores. Incluye TODOS los exámenes realizados en recomendaciones_por_examen; si un examen no tiene recomendación sustentada usa lista vacía.
+1. RECOMENDACIONES POR EXAMEN: en el formato B relaciona por misma fila/celda, encabezado inequívoco o prefijo «Examen: recomendación». En el formato A permite relación semántica FUERTE según las reglas anteriores. Incluye TODOS los exámenes realizados en recomendaciones_por_examen; si un examen no tiene recomendación sustentada usa lista vacía. Si su celda dice REALIZADO/NORMAL/NO APLICA/APTO, deja recomendaciones vacías y registra ese valor en estados_por_examen.
 2. RECOMENDACIONES GENERALES: conserva las recomendaciones transversales y las que no puedan asociarse con suficiente certeza. No resumas, no parafrasees y no elimines detalles; cada elemento debe conservar el texto clínico completo.
 3. OBSERVACIONES: si existe el campo exacto «Observaciones: ...», conserva TODO su contenido como observación aunque diga «CONTROL DE PESO», «VALORACIÓN POR NUTRICIÓN», «PAUTAS ERGONÓMICAS» o «USO DE CORRECCIÓN ÓPTICA». Solo en «OTRAS OBSERVACIONES Y RECOMENDACIONES» separa observaciones descriptivas de recomendaciones.
 4. REMISIONES: dentro de «Información de Remisiones» / «Remisiones», cada destino listado (ej. «NUTRICIÓN», «MEDICINA GENERAL EPS») ES remisión aunque no repita «remitir». Fuera de esa sección exige «se remite», «remisión a», «remitir a» o «interconsulta». Si dice No/No aplica/Sin remisiones, devuelve «No».
@@ -478,7 +479,9 @@ REGLAS ESTRICTAS:
 8. No mezcles concepto de aptitud, consentimiento, firmas, diagnósticos o texto legal.
 9. ORTOGRAFÍA: corrige únicamente tildes, espacios y errores OCR evidentes. No cambies dosis, frecuencia, pesos, tiempos, lateralidad, especialidad ni sentido clínico.
 10. No inventes, no resumas, no parafrasees.
-11. EVIDENCIAS: devuelve fragmentos breves y literales del PDF para recomendaciones, observaciones, remisiones y vigilancia. Si no hay evidencia, no agregues el dato.
+11. ESTADOS POR EXAMEN: devuelve exclusivamente estados explícitos de la celda del examen (REALIZADO, NORMAL, NO APLICA, APTO). Un estado explícito resuelve esa fila y por sí solo NUNCA obliga a revision_requerida=true.
+12. REVISION_REQUERIDA: usa true solo si después de inspeccionar visualmente el PDF queda una ambigüedad real (texto ilegible, fila cortada, asociación espacial incierta o contradicción material). No la actives porque un examen tenga lista de recomendaciones vacía cuando su estado sea REALIZADO/NORMAL/NO APLICA/APTO.
+13. EVIDENCIAS: devuelve fragmentos breves y literales del PDF para recomendaciones, observaciones, remisiones y vigilancia. Si no hay evidencia, no agregues el dato.
 
 Motor local a auditar:
 ${JSON.stringify(localData)}
@@ -498,7 +501,7 @@ ${text}`;
 Verifica obligatoriamente:
 - Tabla examen/recomendación: relación por FILA, no por palabras internas.
 - Tres columnas médicas/ocupacionales/hábitos: conservar todo; asociar solo relaciones semánticas fuertes por examen y mantener generales las recomendaciones transversales.
-- «REALIZADO» es estado, no recomendación.
+- «REALIZADO» es estado, no recomendación; consérvalo en estados_por_examen.
 - «Observaciones:» conserva todo el campo.
 - En «Información de Remisiones», NUTRICIÓN o MEDICINA GENERAL EPS son remisiones.
 - En «Ingresar al Programa de Vigilancia...», «VISUAL | SVE» es vigilancia visual.

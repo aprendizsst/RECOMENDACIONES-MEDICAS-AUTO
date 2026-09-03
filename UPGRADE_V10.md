@@ -1,6 +1,6 @@
-# Upgrade V10.1 · Reingeniería documental
+# Upgrade V10.2 · Reingeniería documental
 
-V10.1 introduce perfiles especializados por proveedor/formato, procesamiento masivo en dos fases, auditoría IA estructurada, bloqueo de generación ante incertidumbre, plantilla institucional tipo carta y control reforzado de consecutivos en Google Sheets.
+V10.2 introduce perfiles especializados por proveedor/formato, procesamiento masivo en dos fases, auditoría IA estructurada, bloqueo de generación ante incertidumbre, plantilla institucional tipo carta y control reforzado de consecutivos en Google Sheets.
 
 ## Archivos principales modificados
 - `index.html`
@@ -15,4 +15,4 @@ V10.1 introduce perfiles especializados por proveedor/formato, procesamiento mas
 - `tests/profile_engine_v10.js`
 
 ## Regla de publicación
-No mezclar archivos V8/V9 con V10.1. Los archivos de raíz y `/js` incluidos en este paquete están sincronizados. El `Code.gs` raíz y `backend/Code.gs` también están sincronizados.
+No mezclar archivos V8/V9 con V10.2. Los archivos de raíz y `/js` incluidos en este paquete están sincronizados. El `Code.gs` raíz y `backend/Code.gs` también están sincronizados.

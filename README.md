@@ -1,8 +1,8 @@
-# Portal SST · Recomendaciones Médicas V10.1
+# Portal SST · Recomendaciones Médicas V10.2
 
 Aplicación GitHub Pages + Google Apps Script para lectura masiva de conceptos médicos ocupacionales, auditoría multimodal, revisión humana, generación DOCX/PDF, consecutivos compartidos y correo.
 
-## Qué cambia en V10.1
+## Qué cambia en V10.2
 
 ### 1. Motores especializados por formato
 El flujo ya no intenta interpretar todos los certificados con el mismo parser. Primero clasifica el PDF y luego ejecuta un extractor específico:
@@ -21,7 +21,7 @@ La carga se ejecuta en dos colas independientes:
 
 Configuración base: 50 PDF por lote, 4 lecturas locales y 3 auditorías IA simultáneas. Los fallos de un PDF no detienen el resto del lote.
 
-> Ningún sistema OCR/IA puede garantizar matemáticamente 100 % de exactitud sobre documentos arbitrarios. V10.1 usa un modelo *fail-closed*: si la IA falla, hay discrepancias o quedan campos críticos, el documento **no se puede generar** hasta resolver la revisión.
+> Ningún sistema OCR/IA puede garantizar matemáticamente 100 % de exactitud sobre documentos arbitrarios. V10.2 usa un modelo *fail-closed*: si la IA falla, hay discrepancias o quedan campos críticos, el documento **no se puede generar** hasta resolver la revisión.
 
 ### 3. IA de auditoría, no de invención
 Gemini recibe el PDF visual, el texto reconstruido y el resultado del motor especializado. La respuesta está forzada a JSON estructurado y se fusiona sin borrar evidencia local. Reglas estrictas impiden:
@@ -32,7 +32,7 @@ Gemini recibe el PDF visual, el texto reconstruido y el resultado del motor espe
 - resumir o acortar recomendaciones clínicas;
 - asociar una recomendación a un examen sin evidencia suficiente.
 
-V10.1 usa `gemini-3.8-flash` como modelo preferido, con `gemini-3.7-flash` y versiones anteriores como respaldo. El nivel de razonamiento se limita a `low` para reducir latencia en extracción documental estructurada.
+V10.2 usa `gemini-3.8-flash` como modelo preferido, con `gemini-3.7-flash` y versiones anteriores como respaldo. El nivel de razonamiento se limita a `low` para reducir latencia en extracción documental estructurada.
 
 ### 4. Ortografía controlada
 La normalización corrige tildes, espacios y errores OCR conocidos sin modificar dosis, tiempos, unidades, límites de peso, lateralidad ni el sentido clínico. Las siglas (SST, PVE, SVE, DME, EPP, EPS, ARL, AFP, IMC, PPyP) se preservan.
@@ -95,3 +95,7 @@ python tests/parser_regression.py
 ```
 
 Estas pruebas cubren los dos perfiles documentales y las regresiones del parser legado.
+
+
+## Corrección V10.2 · filas con estado REALIZADO
+El perfil JER ahora reconoce por estructura cualquier examen ubicado en la columna izquierda de la matriz, incluso nombres no catalogados. Los valores REALIZADO/NORMAL/NO APLICA/APTO se conservan como estado de la fila y no generan una falsa revisión por recomendación faltante. La auditoría IA devuelve estados_por_examen de forma explícita.

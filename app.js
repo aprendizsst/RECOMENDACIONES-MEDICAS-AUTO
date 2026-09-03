@@ -535,7 +535,7 @@
     for (const item of (aiData?.recomendaciones_por_examen || [])) {
       const exam = String(item?.examen || '').trim();
       if (!exam) continue;
-      map[exam] = (item?.recomendaciones || []).map((x) => SSTProfiles.normalizeClinicalText(x)).filter(Boolean);
+      map[exam] = (item?.recomendaciones || []).map((x) => SSTProfiles.normalizeClinicalText(x)).filter(Boolean).filter((x) => !/^(REALIZAD[OA]S?|NORMAL|NO APLICA|N\/?A|APTO)$/i.test(String(x).trim()));
     }
     const signature = (v) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[^A-Z0-9]+/g,' ').trim();
     const assigned = new Set(Object.values(map).flat().map(signature));
@@ -575,6 +575,25 @@
       out[target]=mergeDetailedTextLists([...(out[target]||[]),...(aiRecs||[])]);
     }
     return out;
+  }
+
+  function mergeExamStatuses(localStatuses, aiStatuses, examList = []) {
+    const out={...(localStatuses||{})};
+    const entries=Array.isArray(aiStatuses) ? aiStatuses.map((x)=>[x?.examen,x?.estado]) : Object.entries(aiStatuses||{});
+    for(const [rawExam,rawStatus] of entries){
+      const exam=String(rawExam||'').trim(); const status=String(rawStatus||'').trim();
+      if(!exam||!status)continue;
+      if(!/^(REALIZAD[OA]S?|NORMAL|NO APLICA|N\/?A|APTO)$/i.test(status))continue;
+      const key=semanticSignature(exam);
+      const target=[...examList,...Object.keys(out)].find((x)=>{ const k=semanticSignature(x); return k===key || (k.length>8&&key.length>8&&(k.includes(key)||key.includes(k))); }) || exam;
+      out[target]=/^REALIZAD/i.test(status)?'Realizado':SSTProfiles.normalizeClinicalText(status);
+    }
+    return out;
+  }
+
+  function unresolvedExamCoverage(data) {
+    const exams=data?.examenes_lista||[], map=normalizedMap(data||{}), statuses=data?.estado_por_examen||{};
+    return exams.filter((exam)=>!((map[exam]||[]).length) && !statuses[exam]);
   }
 
   function mergeRestrictions(localItems, aiItems) {
@@ -627,6 +646,7 @@
     }
     const aiMap = aiMapToObject(ai);
     out.recomendaciones_por_examen = mergeRecommendationMaps(local.recomendaciones_por_examen || {}, aiMap);
+    out.estado_por_examen = mergeExamStatuses(local.estado_por_examen || {}, ai.estados_por_examen || ai.estado_por_examen || {}, out.examenes_lista || []);
     out.recomendaciones_lista = Object.entries(out.recomendaciones_por_examen || {}).flatMap(([exam,recs]) =>
       (recs || []).map((rec) => exam === 'Recomendaciones generales' ? rec : `${exam}: ${rec}`));
     if (Array.isArray(ai.restricciones_laborales)) out.restricciones_lista = mergeRestrictions(local.restricciones_lista||[], ai.restricciones_laborales);
@@ -643,7 +663,11 @@
     if (!String(out.cargo || '').trim()) missing.push('cargo');
     if (!(out.examenes_lista || []).length) missing.push('exámenes realizados');
     if (!(out.recomendaciones_lista || []).length && !(out.restricciones_lista || []).length) missing.push('recomendaciones/restricciones');
-    if(ai.revision_requerida===true) reviewFlags.push('auditoría IA solicita revisión');
+    // Un examen cuya celda derecha dice REALIZADO/NORMAL/NO APLICA es un caso resuelto,
+    // no una recomendación faltante. Solo conserva la alerta general de Gemini cuando
+    // persiste una incertidumbre verificable después de fusionar recomendaciones y estados.
+    const unresolvedCoverage = unresolvedExamCoverage(out);
+    if(ai.revision_requerida===true && (unresolvedCoverage.length || reviewFlags.some((x)=>String(x).includes('discrepancia')) || missing.length)) reviewFlags.push('auditoría IA solicita revisión');
     out.campos_revision = [...new Set([...reviewFlags,...missing].filter(Boolean))];
     out.calidad_extraccion = out.campos_revision.length ? 'Revisar' : 'Alta';
     return out;

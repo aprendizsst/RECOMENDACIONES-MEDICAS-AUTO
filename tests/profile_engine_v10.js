@@ -67,3 +67,34 @@ assert.ok(a.recomendaciones_lista.includes('Uso de EPP'));
 assert.ok(a.recomendaciones_lista.includes('SVE osteomuscular'));
 assert.ok(!a.recomendaciones_lista.some(x=>x==='Seguimiento por ortopedia y manejo analgésico'));
 console.log('OK · perfiles V10 JER_TABLA + CONTROL_PERIODICO');
+
+
+const JER_ESTADOS=`INFORMACIÓN DE LA EMPRESA.
+INFORMACIÓN DEL PACIENTE.
+Fecha y Lugar:\t03 sep. 2026 - TUNJA - BOYACA
+Identificación:\t123456789
+Paciente:\tPRUEBA USUARIO
+Cargo:\tAUXILIAR
+EXÁMENES DE DIAGNÓSTICO LABORAL REALIZADOS - RECOMENDACIONES.
+AUDIOMETRIA\t1. CONTROL ANUAL, 2. PAUTAS DE CUIDADO AUDITIVO, 3. USO DE ELEMENTOS DE PROTECCIÓN AUDITIVA EN EXPOSICIÓN A RUIDO
+ESPIROMETRIA\tREALIZAR ACTIVIDAD FÍSICA, UTILIZAR ELEMENTOS DE PROTECCIÓN RESPIRATORIA, CONTROL ANUAL.
+OPTOMETRIA\tUSO DE GAFAS CON PROTECCIÓN SOLAR
+EXAMEN MEDICO OCUPACIONAL\tUSO DE ELEMENTOS DE PROTECCION PERSONAL, SEGUIR PAUTAS DE HIGIENE POSTURAL, REALIZAR PAUSAS ACTIVAS DE 5 MINUTOS POR LO MENOS CADA 2 HORAS
+PERFIL LIPIDICO\tRealizado
+KOH DE UÑAS\tRealizado
+COPROLOGICO\tRealizado
+FROTIS FARINGEO\tRealizado
+ENFASIS CARDIOVASCULAR\tREALIZADO
+ENFASIS OSTEOMUSCULAR\tREALIZADO
+CONCEPTO LABORAL
+APTO`;
+const c=P.analyze(JER_ESTADOS);
+assert.equal(c.perfil_detectado.id,'JER_TABLA');
+assert.equal(c.examenes_lista.length,10);
+for (const exam of ['Perfil lipídico','KOH de uñas','Coprológico','Frotis faríngeo','Énfasis cardiovascular','Énfasis osteomuscular']) {
+  assert.ok(c.examenes_lista.includes(exam), `Falta examen ${exam}`);
+  assert.equal(c.estado_por_examen[exam], 'Realizado', `Estado incorrecto para ${exam}`);
+  assert.deepEqual(c.recomendaciones_por_examen[exam], [], `REALIZADO no debe ser recomendación para ${exam}`);
+}
+assert.equal(c.campos_revision.length,0);
+console.log('OK · formato JER con exámenes de estado REALIZADO');
