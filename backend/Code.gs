@@ -1,6 +1,6 @@
 const APP_NAME = 'Portal SST · Recomendaciones Médicas';
 const GEMINI_GENERATE_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models/';
-const DEFAULT_GEMINI_MODEL = 'gemini-3.7-flash';
+const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
 const SESSION_HOURS = 8;
 const USER_SHEET = 'Usuarios';
 const EMAIL_SHEET = 'HistorialCorreos';
@@ -89,6 +89,7 @@ function apiDispatch(requestJson) {
       case 'geminiAnalyze': return geminiAnalyze_(requireSession_(sessionToken), payload);
       case 'aiStatus': return aiStatus_(requireSession_(sessionToken));
       case 'nextConsecutive': return nextConsecutive_(requireSession_(sessionToken), payload);
+      case 'reserveConsecutives': return reserveConsecutives_(requireSession_(sessionToken), payload);
       case 'consecutiveStatus': return consecutiveStatus_(requireSession_(sessionToken));
       case 'saveConsecutiveConfig': return saveConsecutiveConfig_(requireAdmin_(sessionToken), payload);
       case 'mailStatus': return mailStatus_(requireSession_(sessionToken));
@@ -327,11 +328,12 @@ function geminiSchema_() {
   return { type:'OBJECT', properties:{
     nombre:{type:'STRING'}, cargo:{type:'STRING'}, identificacion:{type:'STRING'}, correo:{type:'STRING'}, tipo_examen:{type:'STRING'}, lugar:{type:'STRING'}, fecha:{type:'STRING',description:'AAAA-MM-DD o vacío'},
     examenes_realizados:{type:'ARRAY',items:{type:'STRING'}}, recomendaciones_medicas:{type:'ARRAY',items:{type:'STRING'}}, recomendaciones_por_examen:{type:'ARRAY',items:{type:'OBJECT',properties:{examen:{type:'STRING'},recomendaciones:{type:'ARRAY',items:{type:'STRING'}}},required:['examen','recomendaciones']}},
-    vigilancia_programa:{type:'ARRAY',items:{type:'STRING'}}, observaciones:{type:'STRING'}, remisiones:{type:'STRING'},
+    restricciones_laborales:{type:'ARRAY',items:{type:'OBJECT',properties:{tipo:{type:'STRING'},texto:{type:'STRING'}},required:['tipo','texto']}},
+    vigilancia_programa:{type:'ARRAY',items:{type:'STRING'}}, observaciones:{type:'STRING'}, remisiones:{type:'STRING'}, revision_requerida:{type:'BOOLEAN'},
     evidencias:{type:'OBJECT',properties:{
-      recomendaciones:{type:'ARRAY',items:{type:'STRING'}}, observaciones:{type:'STRING'}, remisiones:{type:'STRING'}, vigilancia_programa:{type:'STRING'}
-    },required:['recomendaciones','observaciones','remisiones','vigilancia_programa']}
-  }, required:['nombre','cargo','identificacion','correo','tipo_examen','lugar','fecha','examenes_realizados','recomendaciones_medicas','recomendaciones_por_examen','vigilancia_programa','observaciones','remisiones','evidencias'] };
+      recomendaciones:{type:'ARRAY',items:{type:'STRING'}}, restricciones:{type:'ARRAY',items:{type:'STRING'}}, observaciones:{type:'STRING'}, remisiones:{type:'STRING'}, vigilancia_programa:{type:'STRING'}
+    },required:['recomendaciones','restricciones','observaciones','remisiones','vigilancia_programa']}
+  }, required:['nombre','cargo','identificacion','correo','tipo_examen','lugar','fecha','examenes_realizados','recomendaciones_medicas','recomendaciones_por_examen','restricciones_laborales','vigilancia_programa','observaciones','remisiones','revision_requerida','evidencias'] };
 }
 
 function geminiPayload_(pdfBase64, prompt) {
@@ -342,7 +344,10 @@ function geminiPayload_(pdfBase64, prompt) {
     ]}],
     generationConfig:{
       responseMimeType:'application/json',
-      responseSchema:geminiSchema_()
+      responseSchema:geminiSchema_(),
+      // Extracción documental estructurada: 'low' reduce latencia en lotes sin desactivar
+      // la comprobación multimodal. El esquema JSON mantiene la salida determinística.
+      thinkingConfig:{ thinkingLevel:'low' }
     }
   };
 }
@@ -363,28 +368,39 @@ function extractGeminiJson_(bodyText) {
 function geminiRequest_(apiKey, model, pdfBase64, prompt) {
   const cleanModel = String(model || DEFAULT_GEMINI_MODEL).replace(/^models\//,'').trim();
   const url = GEMINI_GENERATE_BASE_URL + encodeURIComponent(cleanModel) + ':generateContent';
-  let response;
-  try {
-    response = UrlFetchApp.fetch(url, {
-      method:'post',
-      contentType:'application/json',
-      muteHttpExceptions:true,
-      headers:{'x-goog-api-key':apiKey},
-      payload:JSON.stringify(geminiPayload_(pdfBase64,prompt))
-    });
-  } catch (error) {
-    const msg = error && error.message ? error.message : String(error);
-    if (/script\.external_request|UrlFetchApp|permiso|permission|authorization/i.test(msg)) {
-      throw new Error('Gemini no está autorizado en Apps Script. Ejecuta manualmente authorizePortalServices() desde el editor, acepta el permiso de solicitudes externas y vuelve a publicar una nueva versión de la Web App. Detalle: ' + msg);
+  let lastError = null;
+  for (let attempt=0; attempt<3; attempt++) {
+    let response;
+    try {
+      response = UrlFetchApp.fetch(url, {
+        method:'post',
+        contentType:'application/json',
+        muteHttpExceptions:true,
+        headers:{'x-goog-api-key':apiKey},
+        payload:JSON.stringify(geminiPayload_(pdfBase64,prompt))
+      });
+    } catch (error) {
+      const msg = error && error.message ? error.message : String(error);
+      if (/script\.external_request|UrlFetchApp|permiso|permission|authorization/i.test(msg)) {
+        throw new Error('Gemini no está autorizado en Apps Script. Ejecuta manualmente authorizePortalServices() desde el editor, acepta el permiso de solicitudes externas y vuelve a publicar una nueva versión de la Web App. Detalle: ' + msg);
+      }
+      lastError = error;
+      if (attempt < 2) { Utilities.sleep(900 * Math.pow(2,attempt)); continue; }
+      throw error;
     }
-    throw error;
-  }
-  const status = response.getResponseCode();
-  if (status < 200 || status >= 300) {
+    const status = response.getResponseCode();
+    if (status >= 200 && status < 300) return extractGeminiJson_(response.getContentText());
     const detail = response.getContentText().slice(0,1200);
-    const err = new Error('Gemini HTTP ' + status + ': ' + detail); err.status = status; throw err;
+    const err = new Error('Gemini HTTP ' + status + ': ' + detail); err.status = status; lastError = err;
+    // En procesamiento masivo, 429/503 pueden ser transitorios. Reintenta el mismo modelo
+    // con backoff antes de saltar a otro modelo o marcar el PDF como pendiente.
+    if ((status === 429 || status === 503 || status === 500) && attempt < 2) {
+      Utilities.sleep(1200 * Math.pow(2,attempt));
+      continue;
+    }
+    throw err;
   }
-  return extractGeminiJson_(response.getContentText());
+  throw lastError || new Error('Gemini no respondió.');
 }
 
 function uniqueStrings_(items) {
@@ -400,9 +416,10 @@ function mergeGeminiAudits_(first, second) {
   ['nombre','cargo','identificacion','correo','tipo_examen','lugar','fecha','observaciones','remisiones'].forEach(function(k){
     if (Object.prototype.hasOwnProperty.call(second, k)) out[k] = second[k];
   });
-  ['examenes_realizados','recomendaciones_medicas','vigilancia_programa','recomendaciones_por_examen'].forEach(function(k){
+  ['examenes_realizados','recomendaciones_medicas','restricciones_laborales','vigilancia_programa','recomendaciones_por_examen'].forEach(function(k){
     if (Array.isArray(second[k])) out[k] = second[k];
   });
+  if (Object.prototype.hasOwnProperty.call(second, 'revision_requerida')) out.revision_requerida = !!second.revision_requerida;
   if (second.evidencias && typeof second.evidencias === 'object') out.evidencias = second.evidencias;
   return out;
 }
@@ -414,9 +431,11 @@ function geminiAnalyze_(user, payload) {
   const pdfBase64 = String(payload.pdfBase64 || '');
   if (!pdfBase64) throw new Error('No se recibió el PDF para validación visual.');
   const localData = payload.localData || {};
+  const profileId = String(payload.profileId || localData?.perfil_detectado?.id || '').trim();
+  const profileConfidence = Number(payload.profileConfidence || localData?.confianza_formato || 0);
   const text = String(payload.text || '').slice(0,50000);
   const preferred = String(payload.model || props.getProperty('GEMINI_MODEL') || DEFAULT_GEMINI_MODEL).replace(/^models\//,'').trim();
-  const models = [preferred, DEFAULT_GEMINI_MODEL, 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'].filter(function(v,i,a){ return v && a.indexOf(v) === i; });
+  const models = [preferred, DEFAULT_GEMINI_MODEL, 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'].filter(function(v,i,a){ return v && a.indexOf(v) === i; });
   const prompt = `Eres un AUDITOR DOCUMENTAL especializado en conceptos médicos ocupacionales colombianos. Tu tarea es EXTRAER lo que está escrito o marcado visualmente en el PDF; nunca completar por conocimiento clínico ni inferir datos que el documento no indique.
 
 MÉTODO OBLIGATORIO:
@@ -424,7 +443,8 @@ A. Recorre visualmente cada página completa.
 B. Identifica primero si cada bloque es tabla por filas, tabla por columnas, etiqueta/valor, casillas/checks o texto corrido.
 C. Conserva las relaciones espaciales. Que una recomendación mencione «optometría» no significa que pertenezca a Optometría.
 D. Usa el motor local y el texto reconstruido solo como apoyo; el PDF visual es la fuente de verdad.
-E. Haz una segunda comprobación de recomendaciones, observaciones, PVE/SVE y remisiones antes de responder.
+E. Haz una comprobación interna de recomendaciones, restricciones, observaciones, PVE/SVE y remisiones antes de responder.
+F. El motor determinístico detectó el perfil "${profileId || 'NO_DETERMINADO'}" con confianza ${profileConfidence || 0}/100. Úsalo como pista, nunca como fuente de verdad.
 
 FORMATO TIPO A — MATRIZ + TRES COLUMNAS DE RECOMENDACIONES:
 - Puede decir «El concepto de Aptitud se definió a partir de los siguientes exámenes practicados» y listar exámenes en dos columnas con chulos/checks.
@@ -454,9 +474,11 @@ REGLAS ESTRICTAS:
 4. REMISIONES: dentro de «Información de Remisiones» / «Remisiones», cada destino listado (ej. «NUTRICIÓN», «MEDICINA GENERAL EPS») ES remisión aunque no repita «remitir». Fuera de esa sección exige «se remite», «remisión a», «remitir a» o «interconsulta». Si dice No/No aplica/Sin remisiones, devuelve «No».
 5. VIGILANCIA: dentro del bloque «Ingresar al Programa de Vigilancia Epidemiológica...» una fila «VISUAL | SVE» significa vigilancia visual. Una mención «SVE VISUAL: ...» también es evidencia. No infieras PVE/SVE solo por temática si no aparece PVE/SVE/programa o no está en el bloque dedicado.
 6. EXÁMENES: conserva todos los listados/marcados como realizados. No conviertas «examen visual de control en un año» en examen realizado.
-7. No mezcles restricciones, concepto de aptitud, consentimiento, firmas, diagnósticos o texto legal.
-8. No inventes, no resumas, no parafrasees. Corrige solo espacios/tildes/OCR evidente.
-9. EVIDENCIAS: devuelve fragmentos breves y literales del PDF para recomendaciones, observaciones, remisiones y vigilancia. Si no hay evidencia, no agregues el dato.
+7. RESTRICCIONES: extrae exclusivamente las restricciones laborales explícitas. En el formato JER están bajo «Tipo de Restricción / Condiciones, Factores, Agentes Asociados». En el formato de control periódico pueden aparecer en la tabla «RESTRICCIONES LABORALES | TIPO | RECOMENDACIONES»; conserva el tipo TEMPORAL/PERMANENTE y el texto completo. No dupliques una misma frase como restricción y recomendación salvo que el PDF la presente explícitamente en ambos bloques.
+8. No mezcles concepto de aptitud, consentimiento, firmas, diagnósticos o texto legal.
+9. ORTOGRAFÍA: corrige únicamente tildes, espacios y errores OCR evidentes. No cambies dosis, frecuencia, pesos, tiempos, lateralidad, especialidad ni sentido clínico.
+10. No inventes, no resumas, no parafrasees.
+11. EVIDENCIAS: devuelve fragmentos breves y literales del PDF para recomendaciones, observaciones, remisiones y vigilancia. Si no hay evidencia, no agregues el dato.
 
 Motor local a auditar:
 ${JSON.stringify(localData)}
@@ -469,7 +491,8 @@ ${text}`;
     try {
       let first = geminiRequest_(apiKey, model, pdfBase64, prompt);
       let data = first;
-      try {
+      const secondAuditRequired = profileConfidence < 92 || first.revision_requerida === true || (Array.isArray(first.recomendaciones_medicas) && first.recomendaciones_medicas.length === 0);
+      if (secondAuditRequired) try {
         const auditPrompt = `AUDITORÍA FINAL ADVERSARIAL. Relee el PDF completo sin asumir que la primera extracción es correcta.
 
 Verifica obligatoriamente:
@@ -481,6 +504,7 @@ Verifica obligatoriamente:
 - En «Ingresar al Programa de Vigilancia...», «VISUAL | SVE» es vigilancia visual.
 - Fuera de PVE/SVE no infieras programa por temática.
 - No conviertas «control por ...» dentro de Observaciones en remisión.
+- Revisa la sección de restricciones y conserva tipo + texto sin resumir.
 
 Primera extracción (puede contener falsos positivos y puedes eliminarlos):
 ${JSON.stringify(first)}
@@ -493,6 +517,7 @@ Devuelve el JSON COMPLETO corregido. Si algo no tiene evidencia visual, elimína
         data = mergeGeminiAudits_(first, second);
         data._segunda_revision_ia = true;
       } catch (_) { data._segunda_revision_ia = false; }
+      else { data._segunda_revision_ia = false; data._auditoria_optimizada = true; }
       data._modelo_usado = model;
       data._fragmentos_pendientes = [];
       return data;
@@ -578,11 +603,26 @@ function locateConsecutiveSheetByName_(sheet, knownHeaderRow, knownConsecutiveCo
 function parseConsecutiveNumber_(value, year, prefix) {
   const raw = String(value || '').trim();
   if (!raw) return 0;
-  if (/^\d+$/.test(raw)) return Number(raw);
+  // Excel/Sheets suele mostrar consecutivos como 42.613 o 42,613. Eso representa
+  // cuarenta y dos mil seiscientos trece, NO el consecutivo 613.
+  if (/^\d{1,3}(?:[.,]\d{3})+$/.test(raw)) return Number(raw.replace(/[.,]/g,'')) || 0;
+  if (/^\d+$/.test(raw)) return Number(raw) || 0;
   const years = raw.match(/20\d{2}/g) || [];
   if (years.length && years.indexOf(String(year)) < 0) return 0;
-  const m = raw.match(/(\d+)\s*$/);
-  return m ? Number(m[1]) || 0 : 0;
+  const m = raw.match(/(\d[\d.,]*)\s*$/);
+  if (!m) return 0;
+  const tail = m[1];
+  if (/^\d{1,3}(?:[.,]\d{3})+$/.test(tail)) return Number(tail.replace(/[.,]/g,'')) || 0;
+  return Number(tail.replace(/\D/g,'')) || 0;
+}
+
+function formatNextConsecutive_(maxRaw, next, year, prefix) {
+  const raw = String(maxRaw || '').trim();
+  if (/^\d{1,3}(?:\.\d{3})+$/.test(raw)) return String(next).replace(/\B(?=(\d{3})+(?!\d))/g,'.');
+  if (/^\d{1,3}(?:,\d{3})+$/.test(raw)) return String(next).replace(/\B(?=(\d{3})+(?!\d))/g,',');
+  if (/^\d+$/.test(raw)) return String(next);
+  if (raw && /\d[\d.,]*\s*$/.test(raw)) return raw.replace(/\d[\d.,]*\s*$/, String(next));
+  return prefix + '-' + year + '-' + next;
 }
 
 function findHeaderCol_(info, names) {
@@ -592,11 +632,11 @@ function findHeaderCol_(info, names) {
 
 function scanConsecutives_(info, year, prefix, documentKey) {
   const start = info.headerRow + 1, last = info.sheet.getLastRow();
-  if (last < start) return { max:0, existing:'', rows:0 };
+  if (last < start) return { max:0, maxRaw:'', existing:'', rows:0 };
   const values = info.sheet.getRange(start,1,last-start+1,Math.max(info.sheet.getLastColumn(), info.consecutiveCol)).getDisplayValues();
   const keyCol = findHeaderCol_(info, ['hash_documento','hash documento','document_key','document key','hash']);
   const yearCol = findHeaderCol_(info, ['anio','año','year']);
-  let max = 0, existing = '', rows = 0;
+  let max = 0, maxRaw = '', existing = '', rows = 0;
   values.forEach(function(row){
     const raw = String(row[info.consecutiveCol-1] || '').trim();
     if (!raw) return;
@@ -605,10 +645,10 @@ function scanConsecutives_(info, year, prefix, documentKey) {
       if (rowYear && rowYear[0] !== String(year)) return;
     }
     const parsed = parseConsecutiveNumber_(raw, year, prefix);
-    if (parsed > 0) { max = Math.max(max, parsed); rows++; }
+    if (parsed > 0) { if (parsed > max) { max = parsed; maxRaw = raw; } rows++; }
     if (documentKey && keyCol && String(row[keyCol-1]||'').trim() === documentKey) existing = raw;
   });
-  return { max:max, existing:existing, rows:rows };
+  return { max:max, maxRaw:maxRaw, existing:existing, rows:rows };
 }
 
 function consecutiveExists_(info, value) {
@@ -661,13 +701,70 @@ function appendConsecutive_(info, values) {
   info.sheet.getRange(info.sheet.getLastRow()+1,1,1,width).setValues([row]);
 }
 
+function buildConsecutiveRow_(info, values) {
+  const width = Math.max(info.sheet.getLastColumn(), info.headers.length, CONSECUTIVE_HEADERS.length);
+  const row = new Array(width).fill('');
+  function put(names, value) { const c=findHeaderCol_(info,names); if(c)row[c-1]=value; }
+  put(['numero'], values.number);
+  put(['consecutivo','numero de consecutivo','n consecutivo','no consecutivo'], values.consecutive);
+  put(['anio','año'], values.year);
+  put(['fecha_documento','fecha documento','fecha'], values.date);
+  put(['trabajador','nombre','colaborador'], values.name);
+  put(['identificacion','documento','cedula','cédula'], values.identification);
+  put(['cargo','rol'], values.role);
+  put(['tipo_examen','tipo examen','examen'], values.exam);
+  put(['pdf_origen','pdf origen','archivo','documento origen'], values.sourceFile);
+  put(['hash_documento','hash documento','document_key','document key','hash'], values.documentKey);
+  put(['usuario'], values.user);
+  put(['creado_en','creado en','timestamp'], new Date());
+  if (!row[info.consecutiveCol-1]) row[info.consecutiveCol-1] = values.consecutive;
+  return row;
+}
+
+function loadConsecutiveIndex_(info, year, prefix) {
+  const start = info.headerRow + 1, last = info.sheet.getLastRow();
+  const out = { max:0, maxRaw:'', rows:0, byKey:{}, values:{}, duplicateConsecutives:[], conflictingKeys:[] };
+  if (last < start) return out;
+  const width = Math.max(info.sheet.getLastColumn(), info.consecutiveCol);
+  const rows = info.sheet.getRange(start,1,last-start+1,width).getDisplayValues();
+  const keyCol = findHeaderCol_(info, ['hash_documento','hash documento','document_key','document key','hash']);
+  const yearCol = findHeaderCol_(info, ['anio','año','year']);
+  const duplicateSet = {}, conflictSet = {};
+  rows.forEach(function(row){
+    if (yearCol) { const y=String(row[yearCol-1]||'').match(/20\d{2}/); if (y && y[0] !== String(year)) return; }
+    const raw=String(row[info.consecutiveCol-1]||'').trim(); if(!raw)return;
+    const parsed=parseConsecutiveNumber_(raw,year,prefix); if(parsed>0){ if(parsed>out.max){out.max=parsed;out.maxRaw=raw;} out.rows++; }
+    if(out.values[raw]) duplicateSet[raw]=true; out.values[raw]=true;
+    if(keyCol){ const key=String(row[keyCol-1]||'').trim(); if(key){ if(out.byKey[key] && out.byKey[key]!==raw) conflictSet[key]=true; else out.byKey[key]=raw; } }
+  });
+  out.duplicateConsecutives=Object.keys(duplicateSet);
+  out.conflictingKeys=Object.keys(conflictSet);
+  return out;
+}
+
+function loadLedgerMap_(spreadsheetId, sheetName) {
+  const map={}; const sheet=getSheet_(CONSECUTIVE_LEDGER_SHEET, CONSECUTIVE_LEDGER_HEADERS); const last=sheet.getLastRow();
+  if(last<=1)return map;
+  const rows=sheet.getRange(2,1,last-1,5).getDisplayValues();
+  rows.forEach(function(r){ if(String(r[2]||'').trim()===String(spreadsheetId||'') && String(r[3]||'').trim()===String(sheetName||'')){ const key=String(r[0]||'').trim(); if(key)map[key]=String(r[1]||'').trim(); } });
+  return map;
+}
+
+function ledgerSaveBatch_(rows) {
+  if(!rows || !rows.length)return;
+  const sheet=getSheet_(CONSECUTIVE_LEDGER_SHEET, CONSECUTIVE_LEDGER_HEADERS);
+  sheet.getRange(sheet.getLastRow()+1,1,rows.length,5).setValues(rows);
+}
+
 function consecutiveStatus_(user) {
   const cfg = consecutiveConfig_();
   const ss = consecutiveSpreadsheet_();
   const info = locateConsecutiveSheet_(ss);
   const year = new Date().getFullYear();
-  const scan = scanConsecutives_(info, year, cfg.prefix, '');
-  return { configured:!!cfg.spreadsheetId, spreadsheetName:ss.getName(), spreadsheetId:ss.getId(), sheetName:info.sheet.getName(), prefix:cfg.prefix, current:scan.max, next:scan.max+1, rowsRead:scan.rows, headerRow:info.headerRow, consecutiveColumn:info.consecutiveCol };
+  const scan = loadConsecutiveIndex_(info, year, cfg.prefix);
+  const db = getDb_();
+  const ledger = getSheet_(CONSECUTIVE_LEDGER_SHEET, CONSECUTIVE_LEDGER_HEADERS);
+  return { configured:!!cfg.spreadsheetId, spreadsheetName:ss.getName(), spreadsheetId:ss.getId(), sheetName:info.sheet.getName(), prefix:cfg.prefix, current:scan.max, currentDisplay:scan.maxRaw || String(scan.max), next:scan.max+1, nextDisplay:formatNextConsecutive_(scan.maxRaw, scan.max+1, year, cfg.prefix), rowsRead:scan.rows, headerRow:info.headerRow, consecutiveColumn:info.consecutiveCol, duplicateConsecutives:scan.duplicateConsecutives, conflictingDocumentKeys:scan.conflictingKeys, controlSpreadsheetName:db.getName(), controlSpreadsheetId:db.getId(), controlSheet:ledger.getName(), controlRows:Math.max(0,ledger.getLastRow()-1) };
 }
 
 function saveConsecutiveConfig_(user, payload) {
@@ -694,8 +791,7 @@ function nextConsecutive_(user, payload) {
     const documentKey = String(payload.documentKey || payload.hash || '').trim();
     const scan = scanConsecutives_(info, year, cfg.prefix, documentKey);
     if (scan.existing) {
-      const existingNumber=parseConsecutiveNumber_(scan.existing,year,cfg.prefix);
-      const existingFormatted=/^\d+$/.test(scan.existing)?(cfg.prefix+'-'+year+'-'+existingNumber):scan.existing;
+      const existingFormatted=scan.existing;
       ledgerSave_(documentKey, existingFormatted, ss.getId(), info.sheet.getName());
       return { consecutive:existingFormatted, reused:true, source:'Google Sheets', sheetName:info.sheet.getName() };
     }
@@ -704,7 +800,7 @@ function nextConsecutive_(user, payload) {
       return { consecutive:ledgerExisting, reused:true, source:'Google Sheets + control', sheetName:info.sheet.getName() };
     }
     const next = scan.max + 1;
-    const consecutive = cfg.prefix + '-' + year + '-' + next;
+    const consecutive = formatNextConsecutive_(scan.maxRaw, next, year, cfg.prefix);
     appendConsecutive_(info, {
       number:next, consecutive:consecutive, year:year, date:String(payload.date||''), name:String(payload.name||''),
       identification:String(payload.identification||''), role:String(payload.role||''), exam:String(payload.exam||''),
@@ -713,6 +809,56 @@ function nextConsecutive_(user, payload) {
     SpreadsheetApp.flush();
     ledgerSave_(documentKey, consecutive, ss.getId(), info.sheet.getName());
     return { consecutive:consecutive, reused:false, source:'Google Sheets', sheetName:info.sheet.getName(), number:next };
+  } finally { lock.releaseLock(); }
+}
+
+function reserveConsecutives_(user, payload) {
+  const items = Array.isArray(payload && payload.items) ? payload.items.slice(0, 200) : [];
+  if (!items.length) return { items:[] };
+  const lock = LockService.getScriptLock(); lock.waitLock(30000);
+  try {
+    const cfg = consecutiveConfig_();
+    const ss = consecutiveSpreadsheet_();
+    const info = locateConsecutiveSheet_(ss);
+    const year = new Date().getFullYear();
+    const index = loadConsecutiveIndex_(info, year, cfg.prefix);
+    const ledgerMap = loadLedgerMap_(ss.getId(), info.sheet.getName());
+    let max = index.max, maxRaw = index.maxRaw || '';
+    const result = [], newSheetRows = [], newLedgerRows = [];
+    const width = Math.max(info.sheet.getLastColumn(), info.headers.length, CONSECUTIVE_HEADERS.length);
+
+    for (let i=0;i<items.length;i++) {
+      const item = items[i] || {};
+      const documentKey = String(item.documentKey || item.hash || '').trim();
+      let existing = documentKey ? (index.byKey[documentKey] || ledgerMap[documentKey] || '') : '';
+      if (existing && !index.values[existing]) existing = '';
+      if (existing) {
+        result.push({ documentKey:documentKey, consecutive:existing, reused:true, source:'Google Sheets + control' });
+        continue;
+      }
+      const next = max + 1;
+      const consecutive = formatNextConsecutive_(maxRaw, next, year, cfg.prefix);
+      const row = buildConsecutiveRow_(info, {
+        number:next, consecutive:consecutive, year:year, date:String(item.date||''), name:String(item.name||''),
+        identification:String(item.identification||''), role:String(item.role||''), exam:String(item.exam||''),
+        sourceFile:String(item.sourceFile||''), documentKey:documentKey, user:String(user.username||'')
+      });
+      while (row.length < width) row.push('');
+      newSheetRows.push(row);
+      if (documentKey) {
+        index.byKey[documentKey] = consecutive;
+        ledgerMap[documentKey] = consecutive;
+        newLedgerRows.push([documentKey, consecutive, ss.getId(), info.sheet.getName(), new Date()]);
+      }
+      index.values[consecutive] = true;
+      result.push({ documentKey:documentKey, consecutive:consecutive, reused:false, source:'Google Sheets', number:next });
+      max = next; maxRaw = consecutive;
+    }
+
+    if (newSheetRows.length) info.sheet.getRange(info.sheet.getLastRow()+1,1,newSheetRows.length,width).setValues(newSheetRows);
+    ledgerSaveBatch_(newLedgerRows);
+    SpreadsheetApp.flush();
+    return { items:result, source:'Google Sheets', sheetName:info.sheet.getName(), reserved:newSheetRows.length, reused:result.length-newSheetRows.length };
   } finally { lock.releaseLock(); }
 }
 

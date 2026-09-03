@@ -1,5 +1,5 @@
 (() => {
-  const OUTPUT_FIELDS = ['nombre','cargo','tipo_examen','identificacion','examenes_lista','estado_por_examen','recomendaciones_por_examen','recomendaciones_lista','recomendaciones_pendientes_revision','observaciones','remisiones','vigilancia_programa','lugar','fecha'];
+  const OUTPUT_FIELDS = ['nombre','cargo','tipo_examen','identificacion','examenes_lista','estado_por_examen','recomendaciones_por_examen','recomendaciones_lista','recomendaciones_pendientes_revision','restricciones_lista','observaciones','remisiones','vigilancia_programa','lugar','fecha'];
 
   class GeneratorService {
     async getAssets() {
@@ -13,10 +13,18 @@
       const token = await SSTDB.getAuth('sessionToken', '');
       if (SSTBackend.url && token) {
         // Con backend activo no se permite caer silenciosamente a un consecutivo local: evitaría duplicados.
-        const result = await SSTBackend.call('nextConsecutive', {
+        let result;
+        const payload = {
           name: data.nombre, identification: data.identificacion, role: data.cargo, exam: data.tipo_examen, date: data.fecha,
           sourceFile: documentRow.fileName || '', documentKey: documentRow.hash || documentRow.id || ''
-        }, { timeout: 60000 });
+        };
+        try { result = await SSTBackend.call('nextConsecutive', payload, { timeout: 120000 }); }
+        catch (error) {
+          if (!/no respondió a tiempo/i.test(error.message || '')) throw error;
+          // Reintento seguro: el backend identifica el mismo PDF por documentKey y reutiliza
+          // el consecutivo ya reservado si la primera respuesta llegó tarde.
+          result = await SSTBackend.call('nextConsecutive', payload, { timeout: 120000 });
+        }
         if (!result?.consecutive) throw new Error('Google Sheets no devolvió un consecutivo válido.');
         data.consecutivo = result.consecutive;
         data.consecutivo_fuente = result.source || 'Google Sheets';
@@ -32,15 +40,36 @@
 
     recommendationsMap(data) {
       const source = data.recomendaciones_por_examen || {};
-      const map = {};
+      const raw = {};
       if (Array.isArray(source)) {
-        for (const item of source) if (item?.examen) map[item.examen] = Array.isArray(item.recomendaciones) ? item.recomendaciones : [];
+        for (const item of source) if (item?.examen) raw[item.examen] = Array.isArray(item.recomendaciones) ? item.recomendaciones : [];
       } else {
-        for (const [key, value] of Object.entries(source)) map[key] = Array.isArray(value) ? value : [];
+        for (const [key, value] of Object.entries(source)) raw[key] = Array.isArray(value) ? value : [];
       }
-      for (const exam of data.examenes_lista || []) if (!(exam in map)) map[exam] = [];
-      if (!Object.values(map).some((x) => x?.length) && (data.recomendaciones_lista || []).length) map['Recomendaciones generales'] = [...data.recomendaciones_lista];
-      return map;
+      const normalize = (value) => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[^A-Z0-9]+/g,' ').trim();
+      const clean = (value) => String(value || '').replace(/^[•\-–—]+\s*/, '').replace(/\s+/g,' ').trim();
+      const result = {};
+      const globalSeen = new Set();
+      // Prioriza recomendaciones asociadas a un examen. Las generales se procesan al final
+      // para que una misma recomendación no aparezca dos veces ni "migre" de sección.
+      const entries = Object.entries(raw).sort(([a],[b]) => (/^recomendaciones generales$/i.test(a)?1:0)-(/^recomendaciones generales$/i.test(b)?1:0));
+      for (const [exam, values] of entries) {
+        const localSeen = new Set(); const kept = [];
+        for (const value of values || []) {
+          const text = clean(value); const key = normalize(text);
+          if (!text || !key || localSeen.has(key) || globalSeen.has(key)) continue;
+          if (/^(REALIZADO|REALIZADA|NORMAL|NO APLICA|N\/?A)$/i.test(text)) continue;
+          localSeen.add(key); globalSeen.add(key); kept.push(text);
+        }
+        if (kept.length) result[exam] = kept;
+      }
+      const generic = Array.isArray(data.recomendaciones_generales) ? data.recomendaciones_generales : [];
+      for (const value of generic) {
+        const text=clean(value), key=normalize(text);
+        if (!text || !key || globalSeen.has(key)) continue;
+        (result['Recomendaciones generales'] ||= []).push(text); globalSeen.add(key);
+      }
+      return result;
     }
 
     htmlPreview(data) {
@@ -64,7 +93,7 @@
       body.format = format;
       body.templateHash = assets.template?.hash || 'default-template-v1';
       body.signatureHash = assets.signature?.hash || '';
-      body.documentEngineVersion = SSTDocx.engineVersion || 'template-engine-v8';
+      body.documentEngineVersion = SSTDocx.engineVersion || 'template-engine-v10';
       return SSTUtils.sha256Text(JSON.stringify(body));
     }
 
@@ -219,7 +248,7 @@
         id:documentRow.id,
         documentId:documentRow.id,
         sourceName:documentRow.fileName,
-        filename:`Recomendaciones_${SSTUtils.slugify(data.nombre)}.${ext}`,
+        filename:`Recomendaciones_${SSTUtils.slugify(data.nombre)}_${SSTUtils.slugify(data.consecutivo || 'sin-consecutivo')}.${ext}`,
         format, mime, blob, previewHtml,
         consecutive:data.consecutivo,
         fingerprint:fp,
@@ -229,14 +258,38 @@
         templateName:assets.template?.name || 'Plantilla base incluida',
         templateHash:assets.template?.hash || 'default-template-v1',
         templateValidation:prepared.validation,
-        documentEngineVersion:SSTDocx.engineVersion || 'template-engine-v8'
+        documentEngineVersion:SSTDocx.engineVersion || 'template-engine-v10'
       };
       await SSTDB.put(SSTDB.stores.outputs, output);
       return { output, reused:false };
     }
 
+    async reserveBatchConsecutives(documents) {
+      const token = await SSTDB.getAuth('sessionToken', '');
+      if (!SSTBackend.url || !token) return;
+      const pending = documents.filter((d) => !d.data?.consecutivo);
+      if (!pending.length) return;
+      const items = pending.map((d) => ({
+        name:d.data?.nombre || '', identification:d.data?.identificacion || '', role:d.data?.cargo || '',
+        exam:d.data?.tipo_examen || '', date:d.data?.fecha || '', sourceFile:d.fileName || '',
+        documentKey:d.hash || d.id || ''
+      }));
+      const response = await SSTBackend.call('reserveConsecutives', { items }, { timeout: 150000 });
+      const byKey = new Map((response?.items || []).map((x) => [String(x.documentKey || ''), x]));
+      for (const doc of pending) {
+        const key = String(doc.hash || doc.id || '');
+        const hit = byKey.get(key);
+        if (!hit?.consecutive) throw new Error(`No se pudo reservar el consecutivo de ${doc.data?.nombre || doc.fileName}.`);
+        doc.data.consecutivo = hit.consecutive;
+        doc.data.consecutivo_fuente = hit.source || 'Google Sheets';
+        doc.updatedAt = new Date().toISOString();
+        await SSTDB.put(SSTDB.stores.documents, doc);
+      }
+    }
+
     async generateAll(documents, formatOverride = null, onProgress = () => {}) {
       const outputs = []; let generated = 0, reused = 0;
+      await this.reserveBatchConsecutives(documents);
       for (let i=0;i<documents.length;i++) {
         onProgress(i, documents.length, documents[i], 'start');
         const result = await this.generate(documents[i], formatOverride);

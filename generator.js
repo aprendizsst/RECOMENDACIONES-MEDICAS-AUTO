@@ -1,5 +1,5 @@
 (() => {
-  const OUTPUT_FIELDS = ['nombre','cargo','tipo_examen','identificacion','examenes_lista','estado_por_examen','recomendaciones_por_examen','recomendaciones_lista','recomendaciones_pendientes_revision','observaciones','remisiones','vigilancia_programa','lugar','fecha'];
+  const OUTPUT_FIELDS = ['nombre','cargo','tipo_examen','identificacion','examenes_lista','estado_por_examen','recomendaciones_por_examen','recomendaciones_lista','recomendaciones_pendientes_revision','restricciones_lista','observaciones','remisiones','vigilancia_programa','lugar','fecha'];
 
   class GeneratorService {
     async getAssets() {
@@ -93,7 +93,7 @@
       body.format = format;
       body.templateHash = assets.template?.hash || 'default-template-v1';
       body.signatureHash = assets.signature?.hash || '';
-      body.documentEngineVersion = SSTDocx.engineVersion || 'template-engine-v9';
+      body.documentEngineVersion = SSTDocx.engineVersion || 'template-engine-v10';
       return SSTUtils.sha256Text(JSON.stringify(body));
     }
 
@@ -248,7 +248,7 @@
         id:documentRow.id,
         documentId:documentRow.id,
         sourceName:documentRow.fileName,
-        filename:`Recomendaciones_${SSTUtils.slugify(data.nombre)}.${ext}`,
+        filename:`Recomendaciones_${SSTUtils.slugify(data.nombre)}_${SSTUtils.slugify(data.consecutivo || 'sin-consecutivo')}.${ext}`,
         format, mime, blob, previewHtml,
         consecutive:data.consecutivo,
         fingerprint:fp,
@@ -258,7 +258,7 @@
         templateName:assets.template?.name || 'Plantilla base incluida',
         templateHash:assets.template?.hash || 'default-template-v1',
         templateValidation:prepared.validation,
-        documentEngineVersion:SSTDocx.engineVersion || 'template-engine-v9'
+        documentEngineVersion:SSTDocx.engineVersion || 'template-engine-v10'
       };
       await SSTDB.put(SSTDB.stores.outputs, output);
       return { output, reused:false };

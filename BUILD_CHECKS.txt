@@ -1,7 +1,12 @@
-V9 checks
-- parser.py: py_compile OK
-- parser regression: OK
-- JS syntax app/config/docx/generator/backend/pdf/db/utils/parser-bridge: OK
-- Code.gs syntax: OK via node copy
-- consecutive parser: 42.613 -> 42613; next -> 42.614
-- recommendation global dedupe: OK
+V10.1 BUILD CHECKS · 2026-09-03
+
+PASS · node tests/profile_engine_v10.js
+PASS · python tests/parser_regression.py
+PASS · node --check on all active JS modules
+PASS · root /js mirrors synchronized for config/app/profile/generator/docx-engine
+PASS · Code.gs == backend/Code.gs
+PASS · default template DOCX rendered to one clean A4 page
+PASS · generated sample DOCX rendered to one clean A4 page
+PASS · Gemini preferred model: gemini-3.8-flash, structured JSON, thinking level low
+PASS · batch cap: 50 PDFs, local queue: 4, AI audit queue: 3
+PASS · generation fails closed when AI validation or quality review is pending

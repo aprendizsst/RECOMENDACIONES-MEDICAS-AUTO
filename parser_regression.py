@@ -1,7 +1,7 @@
 from pathlib import Path
 import importlib.util
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location('parser_v6', ROOT / 'parser.py')
 p = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(p)

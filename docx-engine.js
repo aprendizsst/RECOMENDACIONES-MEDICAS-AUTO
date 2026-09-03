@@ -78,6 +78,16 @@
     for (const item of runs) appendRichRun(doc, paragraph, item.text || '', item, baseRun);
   }
 
+  function replaceParagraphWithRichParagraphs(doc, paragraph, groups) {
+    const parent = paragraph.parentNode;
+    for (const runs of groups) {
+      const clone = paragraph.cloneNode(true);
+      replaceParagraphWithRichRuns(doc, clone, runs);
+      parent.insertBefore(clone, paragraph);
+    }
+    parent.removeChild(paragraph);
+  }
+
   function cleanRecommendationSentence(value) {
     const text = String(value || '').replace(/^[•\-–—]+\s*/, '').replace(/\s+/g, ' ').trim();
     if (!text) return '';
@@ -108,9 +118,20 @@
 
   function serializeXml(doc) { return new XMLSerializer().serializeToString(doc); }
 
+  function subjectExamLabel(value) {
+    const raw=String(value||'').trim(); const n=raw.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
+    if(/SEGUIMIENTO/.test(n)) return 'SEGUIMIENTO LABORAL';
+    if(/PERIODIC/.test(n)) return 'PERIÓDICO';
+    if(/POST\s*INCAPAC/.test(n)) return 'POST INCAPACIDAD';
+    if(/CAMBIO\s+DE\s+CARGO/.test(n)) return 'CAMBIO DE CARGO';
+    if(/INGRESO|PREINGRESO/.test(n)) return 'INGRESO';
+    if(/EGRESO|RETIRO/.test(n)) return 'EGRESO';
+    return raw.replace(/^EXAMEN\s+(?:M[ÉE]DICO\s+OCUPACIONAL\s+)?(?:DE\s+)?/i,'').trim().toLocaleUpperCase('es-CO') || 'OCUPACIONAL';
+  }
+
   class DocxEngine {
     constructor() {
-      this.engineVersion = '2026-08-26.9-corporate-paragraph';
+      this.engineVersion = '2026-09-03.10.1-letter-output';
       this.criticalMarkers = [
         '{{NUMERO DE CONSECUTIVO}}',
         '{{NOMBRE DE LA PERSONA}}',
@@ -120,7 +141,7 @@
       ];
       this.recommendedMarkers = [
         '{{LUGAR}}','{{FECHA HOY}}','{{CARGO DE LA PERSONA}}',
-        '{{Programa de vigilancia epidemiológica}}','{{Observaciones}}','{{Remisiones}}'
+        '{{Programa de vigilancia epidemiológica}}','{{Restricciones laborales}}','{{Observaciones}}','{{Remisiones}}'
       ];
     }
 
@@ -276,7 +297,7 @@
       const doc = parseXml(await documentFile.async('string'));
       const simple = {
         '{{NUMERO DE CONSECUTIVO}}': data.consecutivo || '',
-        '{{TIPO DE EXAMEN}}': data.tipo_examen || '',
+        '{{TIPO DE EXAMEN}}': subjectExamLabel(data.tipo_examen || ''),
         '{{LUGAR}}': data.lugar || 'Tunja',
         '{{FECHA HOY}}': SSTUtils.formatDateEs(data.fecha || SSTUtils.todayIso()),
         '{{NOMBRE DE LA PERSONA}}': data.nombre || '',
@@ -291,7 +312,7 @@
         if (original.includes('{{LISTA DE EXAMENES REALIZADOS}}')) {
           const exams = (data.examenes_lista || []).filter(Boolean);
           const states = data.estado_por_examen || {};
-          replaceParagraphWithLines(doc, p, exams.length ? exams.map((x) => `• ${x}${states[x] ? ` — ${states[x]}` : ''}`) : ['Ninguno.']);
+          replaceParagraphWithLines(doc, p, exams.length ? exams.map((x) => `✓  ${x}${states[x] ? ` — ${states[x]}` : ''}`) : ['Ninguno.']);
           continue;
         }
         if (original.includes('{{Recomendaciones médicas}}')) {
@@ -299,50 +320,46 @@
           const useful = Object.entries(map).map(([exam, recs]) => {
             const unique = []; const seen = new Set();
             for (const rec of Array.isArray(recs) ? recs : []) {
-              const clean = cleanRecommendationSentence(rec);
-              const key = clean.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[^A-Z0-9]+/g,' ').trim();
-              if (clean && key && !seen.has(key)) { seen.add(key); unique.push(clean); }
+              const sentence = cleanRecommendationSentence(rec);
+              const key = sentence.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[^A-Z0-9]+/g,' ').trim();
+              if (sentence && key && !seen.has(key)) { seen.add(key); unique.push(sentence); }
             }
             return [exam, unique];
           }).filter(([, recs]) => recs.length);
 
-          if (!useful.length) {
-            setPText(doc, p, '');
-            continue;
-          }
-
-          const runs = [];
-          useful.forEach(([exam, recs], index) => {
+          if (!useful.length) { setPText(doc, p, ''); continue; }
+          const singleClinical = useful.length === 1 && !/^recomendaciones generales$/i.test(String(useful[0][0]));
+          const groups = useful.map(([exam,recs]) => {
             const isGeneric = /^recomendaciones generales$/i.test(String(exam));
-            const body = recs.join(' ').replace(/\s+/g,' ').trim();
-            if (index === 0) {
-              if (isGeneric) {
-                runs.push({ text:'Se identificaron recomendaciones generales, entre ellas ' });
-              } else {
-                runs.push({ text:'Se observaron recomendaciones a partir del examen de ' });
-                runs.push({ text:String(exam), bold:true });
-                runs.push({ text:', entre ellas ' });
-              }
-            } else if (isGeneric) {
-              runs.push({ text:' Adicionalmente, como recomendaciones generales se indica ' });
-            } else {
-              runs.push({ text:' De igual forma, para el examen de ' });
-              runs.push({ text:String(exam), bold:true });
-              runs.push({ text:', se recomienda ' });
-            }
-            runs.push({ text: body.charAt(0).toLowerCase() + body.slice(1) });
+            const label = singleClinical ? 'Recomendaciones: ' : (isGeneric ? 'Recomendaciones generales: ' : `Recomendaciones – ${exam}: `);
+            return [{ text:label, bold:true }, { text:recs.join(' ').replace(/\s+/g,' ').trim() }];
           });
-          replaceParagraphWithRichRuns(doc, p, runs);
+          replaceParagraphWithRichParagraphs(doc, p, groups);
+          continue;
+        }
+        if (original.toLowerCase().includes('{{restricciones laborales}}')) {
+          const restrictions = (data.restricciones_lista || []).map((r) => typeof r === 'string' ? {tipo:'',texto:r} : r).filter((r) => String(r?.texto || '').trim());
+          if (!restrictions.length) { setPText(doc, p, ''); continue; }
+          const text = restrictions.map((r) => `${r.tipo ? `${r.tipo}: ` : ''}${cleanRecommendationSentence(r.texto)}`).join(' ');
+          replaceParagraphWithRichRuns(doc, p, [{ text:restrictions.length === 1 ? 'Restricción: ' : 'Restricciones: ', bold:true }, { text }]);
           continue;
         }
         if (original.toLowerCase().includes('{{observaciones}}')) {
           const value = semanticBlank(data.observaciones) ? '' : String(data.observaciones || '').trim();
-          setPText(doc, p, original.replace(/\{\{observaciones\}\}/ig, value));
+          if (!value) setPText(doc, p, '');
+          else replaceParagraphWithRichRuns(doc, p, [{text:'Observaciones: ',bold:true},{text:value}]);
+          continue;
+        }
+        if (original.toLowerCase().includes('{{programa de vigilancia epidemiológica}}')) {
+          const value = semanticBlank(data.vigilancia_programa) ? '' : String(data.vigilancia_programa || '').trim();
+          if (!value) setPText(doc, p, '');
+          else replaceParagraphWithRichRuns(doc, p, [{text:'Programa de vigilancia epidemiológica: ',bold:true},{text:value}]);
           continue;
         }
         if (original.toLowerCase().includes('{{remisiones}}')) {
           const value = semanticBlank(data.remisiones) ? '' : String(data.remisiones || '').trim();
-          setPText(doc, p, original.replace(/\{\{remisiones\}\}/ig, value));
+          if (!value) setPText(doc, p, '');
+          else replaceParagraphWithRichRuns(doc, p, [{text:'Remisión: ',bold:true},{text:value}]);
           continue;
         }
         let replaced = original;

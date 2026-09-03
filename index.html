@@ -182,15 +182,22 @@
 
         <section class="view-section" data-view-panel="documents">
           <div class="toolbar-row">
-            <div><span class="eyebrow">INGESTA Y REVISIÓN</span><h2>Documentos</h2><p>Cada PDF se analiza una sola vez en la sesión, se valida automáticamente con IA y puede incluirse o excluirse del lote.</p></div>
+            <div><span class="eyebrow">INGESTA Y REVISIÓN</span><h2>Documentos</h2><p>Clasifica automáticamente el formato, extrae con un motor especializado, audita con IA y procesa lotes de hasta 50 PDF con control de calidad por archivo.</p></div>
             <div class="toolbar-actions"><button id="btnClearLoaded" class="btn danger">Eliminar cargados</button><button id="btnGenerateSelectedBatch" class="btn secondary">Vista previa seleccionados</button><button id="btnGenerateAll" class="btn secondary">Vista previa de todo el lote</button><button id="btnUploadMain" class="btn primary">＋ Cargar PDF</button></div>
           </div>
 
           <input id="pdfInput" type="file" accept="application/pdf,.pdf" multiple hidden />
           <div id="dropZone" class="drop-zone">
-            <div class="drop-icon">⇧</div><div><strong>Arrastra aquí uno o varios certificados PDF</strong><span>o haz clic para seleccionarlos · IA automática + detección de los dos formatos</span></div>
+            <div class="drop-icon">⇧</div><div><strong>Arrastra aquí uno o varios certificados PDF</strong><span>o haz clic para seleccionarlos · motor especializado por formato + auditoría IA + procesamiento por lotes</span></div>
           </div>
           <div id="processingBanner" class="processing-banner hidden"><div><span class="spinner"></span><div><strong id="processingTitle">Procesando documentos</strong><small id="processingDetail">Preparando motor…</small></div></div><div class="progress-track"><div id="processingProgress" class="progress-bar"></div></div></div>
+          <div id="batchInsightStrip" class="batch-insight-strip hidden">
+            <div><small>Formato JER</small><strong id="batchJerCount">0</strong></div>
+            <div><small>Control periódico</small><strong id="batchControlCount">0</strong></div>
+            <div><small>Extracción alta</small><strong id="batchHighCount">0</strong></div>
+            <div><small>Requieren revisión</small><strong id="batchReviewCount">0</strong></div>
+            <div class="wide"><small>Auditoría IA</small><strong id="batchAiSummary">0 / 0</strong></div>
+          </div>
 
           <div class="workspace-grid">
             <aside class="document-list-panel panel">
@@ -226,11 +233,17 @@
                   <div id="recommendationGroups" class="recommendation-groups"></div>
                 </div>
 
+                <div class="editor-section">
+                  <div class="section-head"><div><span class="section-number">3</span><div><strong>Restricciones laborales</strong><small>Una por línea. Si existe tipo, usa “Temporal | texto” o “Permanente | texto”.</small></div></div><span id="restrictionCount" class="status-badge">0 restricciones</span></div>
+                  <textarea id="fieldRestrictions" rows="5" placeholder="Temporal | Manejo de cargas hasta 10 kg de peso bimanual"></textarea>
+                </div>
+
                 <div class="form-grid two">
                   <label><span>Observaciones</span><textarea id="fieldObservations" data-field="observaciones" rows="4"></textarea></label>
                   <label><span>Remisiones</span><textarea id="fieldReferrals" data-field="remisiones" rows="4"></textarea></label>
                 </div>
 
+                <div id="qualityReviewBox" class="review-warning hidden"><strong>Control de calidad obligatorio</strong><p id="qualityReviewText" class="review-copy">Hay diferencias o campos que requieren comparación con el PDF original antes de generar.</p><div id="qualityReviewList" class="review-tags"></div><button id="btnResolveQualityReview" class="btn secondary small" type="button">✓ Marcar revisión manual como resuelta</button></div>
                 <div id="pendingReviewBox" class="review-warning hidden"><strong>Fragmentos pendientes de revisión</strong><textarea id="fieldPending" rows="4"></textarea></div>
 
                 <div class="editor-actions">
@@ -323,14 +336,15 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script src="https://cdn.jsdelivr.net/pyodide/v0.27.7/full/pyodide.js"></script>
-  <script src="js/config.js?v=20260826-9"></script>
-  <script src="js/utils.js?v=20260826-9"></script>
-  <script src="js/db.js?v=20260826-9"></script>
-  <script src="js/backend.js?v=20260826-9"></script>
-  <script src="js/parser-bridge.js?v=20260826-9"></script>
-  <script src="js/pdf-service.js?v=20260826-9"></script>
-  <script src="js/docx-engine.js?v=20260826-9"></script>
-  <script src="js/generator.js?v=20260826-9"></script>
-  <script src="js/app.js?v=20260826-9"></script>
+  <script src="js/config.js?v=20260903-101"></script>
+  <script src="js/utils.js?v=20260903-101"></script>
+  <script src="js/db.js?v=20260903-101"></script>
+  <script src="js/backend.js?v=20260903-101"></script>
+  <script src="js/profile-engine.js?v=20260903-101"></script>
+  <script src="js/parser-bridge.js?v=20260903-101"></script>
+  <script src="js/pdf-service.js?v=20260903-101"></script>
+  <script src="js/docx-engine.js?v=20260903-101"></script>
+  <script src="js/generator.js?v=20260903-101"></script>
+  <script src="js/app.js?v=20260903-101"></script>
 </body>
 </html>

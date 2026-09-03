@@ -196,9 +196,11 @@
         pdfBase64: SSTUtils.arrayBufferToBase64(buffer),
         text: sourceText.slice(0,50000),
         localData: doc.data,
+        profileId:doc.data?.perfil_detectado?.id || '',
+        profileConfidence:Number(doc.data?.confianza_formato || 0),
         model: await SSTDB.getSetting('geminiModel', APP_CONFIG.defaultGeminiModel)
       }, { timeout:195000 });
-      doc.data = await SSTParser.fuse(doc.data, aiData, sourceText);
+      doc.data = fuseAiV10(doc.data, aiData);
       doc.data.validado_ia = true;
       doc.aiError = '';
       doc.aiValidationStatus = 'validated';
@@ -235,13 +237,15 @@
     $('processingBanner').classList.remove('hidden');
     let ok = 0, failed = 0;
     try {
-      for (let i=0; i<pending.length; i++) {
-        const doc = pending[i];
+      let done = 0;
+      const aiConcurrency = Math.max(1, Number(APP_CONFIG.aiConcurrency || 3));
+      await runBoundedPool(pending, aiConcurrency, async (doc) => {
         try {
-          await runAutomaticAiAudit(doc, { title:`IA automática ${i+1} de ${pending.length}`, ratio:(i+.7)/pending.length });
+          await runAutomaticAiAudit(doc, { title:`IA automática ${done+1} de ${pending.length}`, ratio:(done+.7)/pending.length });
           ok++;
         } catch (error) { failed++; console.warn(`IA automática ${doc.fileName}:`, error); }
-      }
+        finally { done++; }
+      });
       await renderAll();
       if (ok) toast('Validación IA automática', `${ok} certificado(s) auditado(s)${failed ? ` · ${failed} pendiente(s)` : ''}.`, failed ? 'warn' : 'success', 6500);
     } finally {
@@ -280,9 +284,10 @@
     }
     try {
       const status = await SSTBackend.call('consecutiveStatus', {}, { timeout: 30000 });
-      $('consecutiveStatusBadge').textContent = `Actual ${status.current ?? 0}`;
-      $('consecutiveStatusBadge').className = 'status-badge success';
-      $('consecutiveStatusDetail').textContent = `${status.spreadsheetName} · ${status.sheetName} · ${status.rowsRead ?? 0} consecutivo(s) válidos leídos · siguiente: ${status.prefix}-${new Date().getFullYear()}-${status.next}`;
+      $('consecutiveStatusBadge').textContent = `Actual ${status.currentDisplay ?? status.current ?? 0}`;
+      const statusIssues = (status.duplicateConsecutives || []).length + (status.conflictingDocumentKeys || []).length;
+      $('consecutiveStatusBadge').className = `status-badge ${statusIssues ? 'warn' : 'success'}`;
+      $('consecutiveStatusDetail').textContent = `${status.spreadsheetName} · ${status.sheetName} · ${status.rowsRead ?? 0} consecutivo(s) válidos · actual: ${status.currentDisplay ?? status.current ?? 0} · siguiente: ${status.nextDisplay ?? status.next} · control: ${status.controlSpreadsheetName || 'Base Portal'} / ${status.controlSheet || 'ConsecutivosControl'} (${status.controlRows ?? 0} registros)${statusIssues ? ` · ALERTA: ${statusIssues} inconsistencia(s) detectada(s)` : ' · integridad OK'}`;
       $('settingsConsecutiveSheet').value = status.sheetName || 'Consecutivos';
       $('settingsConsecutivePrefix').value = status.prefix || 'SST';
       if (status.configured && status.spreadsheetId && !$('settingsConsecutiveSpreadsheet').value) {
@@ -304,9 +309,10 @@
         sheetName: $('settingsConsecutiveSheet').value.trim() || 'Consecutivos',
         prefix: $('settingsConsecutivePrefix').value.trim() || 'SST'
       }, { timeout: 60000 });
-      $('consecutiveStatusBadge').textContent = `Actual ${result.current ?? 0}`;
-      $('consecutiveStatusBadge').className = 'status-badge success';
-      $('consecutiveStatusDetail').textContent = `${result.spreadsheetName} · ${result.sheetName} · ${result.rowsRead ?? 0} consecutivo(s) válidos leídos · siguiente: ${result.prefix}-${new Date().getFullYear()}-${result.next}`;
+      $('consecutiveStatusBadge').textContent = `Actual ${result.currentDisplay ?? result.current ?? 0}`;
+      const resultIssues = (result.duplicateConsecutives || []).length + (result.conflictingDocumentKeys || []).length;
+      $('consecutiveStatusBadge').className = `status-badge ${resultIssues ? 'warn' : 'success'}`;
+      $('consecutiveStatusDetail').textContent = `${result.spreadsheetName} · ${result.sheetName} · ${result.rowsRead ?? 0} consecutivo(s) válidos · actual: ${result.currentDisplay ?? result.current ?? 0} · siguiente: ${result.nextDisplay ?? result.next} · control: ${result.controlSpreadsheetName || 'Base Portal'} / ${result.controlSheet || 'ConsecutivosControl'} (${result.controlRows ?? 0} registros)${resultIssues ? ` · ALERTA: ${resultIssues} inconsistencia(s)` : ' · integridad OK'}`;
       toast('Consecutivos conectados', `Se validará contra ${result.spreadsheetName} / ${result.sheetName}.`, 'success', 6500);
     } catch (error) { toast('No se pudo validar la hoja', error.message, 'error', 8000); }
   }
@@ -351,15 +357,29 @@
     if ($('btnGenerateSelectedBatch')) $('btnGenerateSelectedBatch').disabled = selected === 0;
   }
 
+  function renderBatchInsights() {
+    const strip=$('batchInsightStrip'); if(!strip)return;
+    const total=state.documents.length;
+    strip.classList.toggle('hidden', total === 0);
+    if(!total)return;
+    const jer=state.documents.filter((d)=>d.data?.perfil_detectado?.id==='JER_TABLA').length;
+    const control=state.documents.filter((d)=>d.data?.perfil_detectado?.id==='CONTROL_PERIODICO').length;
+    const high=state.documents.filter((d)=>String(d.data?.calidad_extraccion||'').toLowerCase()==='alta').length;
+    const validated=state.documents.filter((d)=>d.aiValidationStatus==='validated' || d.data?.validado_ia).length;
+    const review=state.documents.filter((d)=>d.dirty || (d.data?.campos_revision||[]).length || d.aiValidationStatus==='error' || d.aiValidationStatus==='pending_auth').length;
+    $('batchJerCount').textContent=jer; $('batchControlCount').textContent=control; $('batchHighCount').textContent=high; $('batchReviewCount').textContent=review; $('batchAiSummary').textContent=`${validated} / ${total}`;
+  }
+
   function renderDocumentList() {
     const query = $('documentSearch')?.value || '';
     const docs = state.documents.filter((d) => documentMatches(d, query));
     $('docListCount').textContent = state.documents.length;
     $('documentList').innerHTML = docs.length ? docs.map((d) => {
       const aiState = d.aiValidationStatus === 'validated' ? 'IA validada' : (d.aiValidationStatus === 'pending_auth' ? 'IA pendiente' : (d.aiValidationStatus === 'error' ? 'IA con error' : 'IA pendiente'));
-      return `<div class="document-item ${d.id === state.selectedDocId ? 'active' : ''}" data-doc-id="${d.id}"><label class="batch-check" title="Incluir en vista previa/lote"><input type="checkbox" class="batch-select" data-batch-id="${d.id}" ${state.selectedBatchIds.has(d.id) ? 'checked' : ''}><span></span></label><div class="doc-icon">PDF</div><div class="doc-main"><strong>${SSTUtils.escapeHtml(d.data?.nombre || 'Sin nombre')}</strong><small>${SSTUtils.escapeHtml(d.fileName)}</small><em>${d.dirty ? 'Editado · requiere actualizar salida' : `${aiState} · ${d.data?.perfil_documental || 'Formato detectado'} · Calidad ${d.data?.calidad_extraccion || '—'}`}</em></div><span class="mini-status ${d.aiValidationStatus === 'validated' ? 'ai' : (d.dirty ? 'warn' : '')}"></span><button class="item-delete" type="button" data-delete-doc="${d.id}" title="Eliminar este archivo" aria-label="Eliminar ${SSTUtils.escapeHtml(d.fileName)}">×</button></div>`;
+      return `<div class="document-item ${d.id === state.selectedDocId ? 'active' : ''}" data-doc-id="${d.id}"><label class="batch-check" title="Incluir en vista previa/lote"><input type="checkbox" class="batch-select" data-batch-id="${d.id}" ${state.selectedBatchIds.has(d.id) ? 'checked' : ''}><span></span></label><div class="doc-icon">PDF</div><div class="doc-main"><strong>${SSTUtils.escapeHtml(d.data?.nombre || 'Sin nombre')}</strong><small>${SSTUtils.escapeHtml(d.fileName)}</small><em>${d.dirty ? 'Editado · requiere actualizar salida' : `${aiState} · ${d.data?.perfil_documental || 'Formato detectado'} · ${Number(d.data?.confianza_formato || 0)}% · ${(d.data?.restricciones_lista || []).length} restr.`}</em></div><span class="mini-status ${d.aiValidationStatus === 'validated' ? 'ai' : (d.dirty ? 'warn' : '')}"></span><button class="item-delete" type="button" data-delete-doc="${d.id}" title="Eliminar este archivo" aria-label="Eliminar ${SSTUtils.escapeHtml(d.fileName)}">×</button></div>`;
     }).join('') : '<div class="empty-state compact"><span>▣</span><strong>Sin certificados</strong></div>';
     renderBatchSelectionSummary();
+    renderBatchInsights();
   }
 
   function selectedDocument() { return state.documents.find((d) => d.id === state.selectedDocId) || null; }
@@ -399,6 +419,19 @@
     const values = { fieldName:d.nombre, fieldId:d.identificacion, fieldEmail:d.correo, fieldRole:d.cargo, fieldExamType:d.tipo_examen, fieldDate:d.fecha || SSTUtils.todayIso(), fieldPlace:d.lugar || 'Tunja', fieldSurveillance:d.vigilancia_programa, fieldObservations:d.observaciones, fieldReferrals:d.remisiones };
     for (const [id,value] of Object.entries(values)) $(id).value = value ?? '';
     $('fieldExams').value = (d.examenes_lista || []).join('\n');
+    if ($('fieldRestrictions')) {
+      $('fieldRestrictions').value = (d.restricciones_lista || []).map((r) => typeof r === 'string' ? r : `${r.tipo ? r.tipo + ' | ' : ''}${r.texto || ''}`).filter(Boolean).join('\n');
+      $('restrictionCount').textContent = `${(d.restricciones_lista || []).length} restricción${(d.restricciones_lista || []).length === 1 ? '' : 'es'}`;
+      $('restrictionCount').className = `status-badge ${(d.restricciones_lista || []).length ? 'success' : ''}`;
+    }
+    const reviews = d.campos_revision || [];
+    if ($('qualityReviewBox')) {
+      $('qualityReviewBox').classList.toggle('hidden', !reviews.length);
+      $('qualityReviewList').innerHTML = reviews.map((x)=>`<span>${SSTUtils.escapeHtml(x)}</span>`).join('');
+      $('qualityReviewText').textContent = reviews.some((x)=>String(x).toLowerCase().includes('discrepancia'))
+        ? 'El motor por formato y la auditoría IA no coinciden en uno o más campos. Compara el PDF original y corrige el editor antes de marcar la revisión como resuelta.'
+        : 'Hay campos que deben verificarse contra el PDF original antes de generar la recomendación.';
+    }
     const pending = d.recomendaciones_pendientes_revision || [];
     $('pendingReviewBox').classList.toggle('hidden', !pending.length); $('fieldPending').value = pending.join('\n');
     const recMap = normalizedMap(d);
@@ -433,6 +466,10 @@
     const fieldMap = { fieldName:'nombre',fieldId:'identificacion',fieldEmail:'correo',fieldRole:'cargo',fieldExamType:'tipo_examen',fieldDate:'fecha',fieldPlace:'lugar',fieldSurveillance:'vigilancia_programa',fieldObservations:'observaciones',fieldReferrals:'remisiones' };
     for (const [id,key] of Object.entries(fieldMap)) d[key] = $(id).value.trim();
     d.examenes_lista = $('fieldExams').value.split('\n').map((x) => x.trim()).filter(Boolean);
+    if ($('fieldRestrictions')) d.restricciones_lista = $('fieldRestrictions').value.split('\n').map((x) => x.trim()).filter(Boolean).map((line) => {
+      const parts = line.split('|');
+      return parts.length > 1 ? { tipo:parts.shift().trim(), texto:parts.join('|').trim() } : { tipo:'', texto:line };
+    });
     const map = {};
     qsa('.recommendation-card', $('recommendationGroups')).forEach((card) => {
       const exam = card.querySelector('.rec-exam').value.trim();
@@ -453,6 +490,7 @@
     if (!(d.examenes_lista || []).length) missing.push('exámenes realizados');
     const pending = d.recomendaciones_pendientes_revision || [];
     if (pending.length) missing.push('fragmentos pendientes de revisión');
+    if ((d.campos_revision || []).length) missing.push(`control de calidad (${d.campos_revision.join(', ')})`);
     if (APP_CONFIG.aiRequiredForGeneration && doc?.aiValidationStatus !== 'validated') missing.push('validación automática con IA');
     return missing;
   }
@@ -492,30 +530,164 @@
     return ['exámenes realizados','recomendaciones','observaciones','remisiones','vigilancia epidemiológica'].some((x) => critical.has(x));
   }
 
-  async function processUploadedFileV8(file, index, total, context) {
-    const { aiEnabled, aiReady, ocrEnabled, options } = context;
-    updateProcessing(`Procesando ${index+1} de ${total}`, file.name, index/total);
+  function aiMapToObject(aiData) {
+    const map = {};
+    for (const item of (aiData?.recomendaciones_por_examen || [])) {
+      const exam = String(item?.examen || '').trim();
+      if (!exam) continue;
+      map[exam] = (item?.recomendaciones || []).map((x) => SSTProfiles.normalizeClinicalText(x)).filter(Boolean);
+    }
+    const signature = (v) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[^A-Z0-9]+/g,' ').trim();
+    const assigned = new Set(Object.values(map).flat().map(signature));
+    const general = (aiData?.recomendaciones_medicas || []).map((x) => SSTProfiles.normalizeClinicalText(x)).filter(Boolean).filter((x) => !assigned.has(signature(x)));
+    if (general.length) map['Recomendaciones generales'] = [...new Map(general.map((x) => [signature(x),x])).values()];
+    return map;
+  }
+
+  function semanticSignature(value) {
+    return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[^A-Z0-9]+/g,' ').trim();
+  }
+
+  function mergeDetailedTextLists(values) {
+    const out=[];
+    for (const raw of values || []) {
+      const value=SSTProfiles.normalizeClinicalText(raw); const key=semanticSignature(value); if(!value||!key)continue;
+      let merged=false;
+      for(let i=0;i<out.length;i++){
+        const existing=semanticSignature(out[i]);
+        if(existing===key){ merged=true; break; }
+        if(existing.includes(key)||key.includes(existing)){ if(key.length>existing.length)out[i]=value; merged=true; break; }
+        const a=existing.split(' ').slice(0,8).join(' '), b=key.split(' ').slice(0,8).join(' ');
+        if(a.length>24 && a===b){ if(key.length>existing.length)out[i]=value; merged=true; break; }
+      }
+      if(!merged)out.push(value);
+    }
+    return out;
+  }
+
+  function mergeRecommendationMaps(localMapRaw, aiMapRaw) {
+    const localMap=normalizedMap({recomendaciones_por_examen:localMapRaw || {}}); const aiMap=aiMapRaw || {};
+    const out={}; for(const [exam,recs] of Object.entries(localMap)) out[exam]=mergeDetailedTextLists(recs);
+    for(const [aiExam,aiRecs] of Object.entries(aiMap)) {
+      const aiKey=semanticSignature(aiExam);
+      let target=Object.keys(out).find((exam)=>{ const k=semanticSignature(exam); return k===aiKey || (k.length>10 && aiKey.length>10 && (k.includes(aiKey)||aiKey.includes(k))); });
+      if(!target) target=aiExam;
+      out[target]=mergeDetailedTextLists([...(out[target]||[]),...(aiRecs||[])]);
+    }
+    return out;
+  }
+
+  function mergeRestrictions(localItems, aiItems) {
+    const out=[];
+    for(const raw of [...(localItems||[]),...(aiItems||[])]) {
+      const item=typeof raw==='string'?{tipo:'',texto:raw}:raw||{};
+      const text=SSTProfiles.normalizeClinicalText(item.texto||''); const key=semanticSignature(text); if(!text||!key)continue;
+      let found=-1;
+      for(let i=0;i<out.length;i++){
+        const existing=semanticSignature(out[i].texto); if(existing===key || existing.includes(key) || key.includes(existing)){found=i;break;}
+      }
+      if(found>=0){
+        if(key.length>semanticSignature(out[found].texto).length)out[found].texto=text;
+        if(!out[found].tipo && item.tipo)out[found].tipo=String(item.tipo).trim();
+      } else out.push({tipo:String(item.tipo||'').trim(),texto:text});
+    }
+    return out;
+  }
+
+  function fuseAiV10(localData, aiData) {
+    const local = SSTUtils.deepClone(localData || {});
+    const ai = aiData || {};
+    const out = { ...local };
+    const reviewFlags=[...(local.campos_revision||[])];
+    const profileConfidence=Number(local.confianza_formato||0);
+    const highProfile=profileConfidence>=Number(APP_CONFIG.highConfidenceProfileThreshold||92);
+    const scalarMap = {
+      nombre:'nombre', cargo:'cargo', identificacion:'identificacion', correo:'correo', tipo_examen:'tipo_examen',
+      lugar:'lugar', fecha:'fecha', observaciones:'observaciones', remisiones:'remisiones'
+    };
+    for (const [aiKey,key] of Object.entries(scalarMap)) {
+      const aiValue = String(ai[aiKey] ?? '').trim(); if(!aiValue)continue;
+      const localValue=String(local[key]??'').trim();
+      if(!localValue){ out[key]=aiValue; continue; }
+      if(semanticSignature(localValue)===semanticSignature(aiValue)) { out[key]=key==='observaciones'?SSTProfiles.normalizeClinicalText(aiValue):aiValue; continue; }
+      const narrative=['observaciones','remisiones','tipo_examen','lugar'].includes(key);
+      if(narrative){
+        const l=semanticSignature(localValue), a=semanticSignature(aiValue);
+        if(l.includes(a)||a.includes(l)) out[key]=a.length>l.length?aiValue:localValue;
+        else if(highProfile) reviewFlags.push(`discrepancia IA: ${key}`);
+        else out[key]=aiValue;
+      } else if(highProfile) {
+        reviewFlags.push(`discrepancia IA: ${key}`);
+      } else out[key]=aiValue;
+    }
+    if (Array.isArray(ai.examenes_realizados) && ai.examenes_realizados.length) {
+      const localExams=local.examenes_lista||[];
+      out.examenes_lista=mergeDetailedTextLists([...(localExams||[]),...ai.examenes_realizados]);
+      if(highProfile && localExams.length && ai.examenes_realizados.length && Math.abs(localExams.length-ai.examenes_realizados.length)>=2) reviewFlags.push('discrepancia IA: exámenes realizados');
+    }
+    const aiMap = aiMapToObject(ai);
+    out.recomendaciones_por_examen = mergeRecommendationMaps(local.recomendaciones_por_examen || {}, aiMap);
+    out.recomendaciones_lista = Object.entries(out.recomendaciones_por_examen || {}).flatMap(([exam,recs]) =>
+      (recs || []).map((rec) => exam === 'Recomendaciones generales' ? rec : `${exam}: ${rec}`));
+    if (Array.isArray(ai.restricciones_laborales)) out.restricciones_lista = mergeRestrictions(local.restricciones_lista||[], ai.restricciones_laborales);
+    else out.restricciones_lista=mergeRestrictions(local.restricciones_lista||[],[]);
+    if (Array.isArray(ai.vigilancia_programa)) {
+      out.vigilancia_lista = mergeDetailedTextLists([...(local.vigilancia_lista||[]),...ai.vigilancia_programa]);
+      out.vigilancia_programa = out.vigilancia_lista.join(', ') || local.vigilancia_programa || 'Ninguno';
+    }
+    out.evidencias = ai.evidencias || out.evidencias || {};
+    out.validado_ia = true;
+    out.modo_validacion = `V10 · ${out.perfil_documental || 'formato detectado'} + auditoría visual IA + fusión sin pérdida`;
+    const missing = [];
+    if (!String(out.nombre || '').trim()) missing.push('nombre');
+    if (!String(out.cargo || '').trim()) missing.push('cargo');
+    if (!(out.examenes_lista || []).length) missing.push('exámenes realizados');
+    if (!(out.recomendaciones_lista || []).length && !(out.restricciones_lista || []).length) missing.push('recomendaciones/restricciones');
+    if(ai.revision_requerida===true) reviewFlags.push('auditoría IA solicita revisión');
+    out.campos_revision = [...new Set([...reviewFlags,...missing].filter(Boolean))];
+    out.calidad_extraccion = out.campos_revision.length ? 'Revisar' : 'Alta';
+    return out;
+  }
+
+  async function ensureLegacyParserForFallback() {
+    if (state.parserReady) return true;
+    try {
+      await SSTParser.init((msg,p) => updateProcessing('Activando respaldo clínico', msg, Math.min(.18, p*.18)));
+      state.parserReady = true;
+      return true;
+    } catch (error) {
+      console.warn('Parser legado no disponible:', error);
+      return false;
+    }
+  }
+
+  async function runBoundedPool(items, concurrency, worker) {
+    const results = new Array(items.length);
+    let cursor = 0;
+    const runners = Array.from({ length: Math.max(1, Math.min(concurrency || 1, items.length)) }, async () => {
+      while (true) {
+        const index = cursor++;
+        if (index >= items.length) break;
+        results[index] = await worker(items[index], index);
+      }
+    });
+    await Promise.all(runners);
+    return results;
+  }
+
+  async function processUploadedFileV10(file, index, total, context) {
+    const { aiEnabled, aiReady, ocrEnabled, options, deferAi = false } = context;
+    updateProcessing(`Procesando lote · ${index+1}/${total}`, `${file.name} · lectura estructural`, index/total);
     const buffer = await file.arrayBuffer();
     const hash = await SSTUtils.sha256Bytes(buffer.slice(0));
     const cached = state.documents.find((d) => d.hash === hash) || (await SSTDB.getByIndex(SSTDB.stores.documents, 'hash', hash))[0];
     const cacheVigente = cached && cached.pipelineVersion === APP_CONFIG.pipelineVersion && !options.force;
     if (cacheVigente) {
       if (!state.documents.some((d) => d.id === cached.id)) state.documents.unshift(cached);
-      state.selectedDocId = cached.id;
-      state.selectedOriginalId = cached.id;
       state.selectedBatchIds.add(cached.id);
-      if (aiEnabled && aiReady && needsAutomaticAiAudit(cached)) {
-        updateProcessing(`Validando caché con IA ${index+1} de ${total}`, `${file.name} · auditoría IA pendiente`, (index+.72)/total);
-        try {
-          await runAutomaticAiAudit(cached, { buffer, sourceText:cached.text || '', title:`Validando con IA ${index+1} de ${total}`, ratio:(index+.86)/total });
-        } catch (error) { console.warn('Gemini automático en caché:', error); }
-      } else {
-        if (needsAutomaticAiAudit(cached) && !aiReady) {
-          cached.aiValidationStatus = 'pending_auth';
-          cached.aiError = state.aiStatus?.detail || 'Gemini pendiente de autorización.';
-          await SSTDB.put(SSTDB.stores.documents, cached);
-        }
-        updateProcessing(`Reutilizando ${index+1} de ${total}`, `${file.name} · extracción V8 vigente`, (index+1)/total);
+      if (!deferAi && aiEnabled && aiReady && needsAutomaticAiAudit(cached)) {
+        try { await runAutomaticAiAudit(cached, { buffer, sourceText:cached.text || '', title:`IA ${index+1}/${total}`, ratio:(index+.86)/total }); }
+        catch (error) { console.warn('IA sobre caché:', error); }
       }
       return { reused:true, row:cached };
     }
@@ -524,56 +696,65 @@
     if (staleId) {
       await SSTDB.delete(SSTDB.stores.outputs, staleId);
       state.outputs = state.outputs.filter((o) => o.id !== staleId);
-      updateProcessing(`Reanalizando ${index+1} de ${total}`, `${file.name} · motor clínico actualizado`, (index+.08)/total);
     }
 
     const blob = new Blob([buffer], { type:'application/pdf' });
     let extraction = await SSTPdf.extract(blob, { ocrEnabled, onProgress: (p) => {
-      const fractional = (index + ((p.page-1) + .55) / Math.max(1,p.total)) / total;
-      updateProcessing(`Procesando ${index+1} de ${total}`, `${file.name} · ${p.message}`, fractional);
+      const fractional = (index + ((p.page-1) + .45) / Math.max(1,p.total)) / total;
+      updateProcessing(`Lectura ${index+1}/${total}`, `${file.name} · ${p.message}`, fractional);
     }});
-    updateProcessing(`Analizando ${index+1} de ${total}`, `${file.name} · filas, columnas y secciones clínicas`, (index+.7)/total);
-    let data = await SSTParser.analyze(extraction.text);
 
-    if (ocrEnabled && needsOcrRescue(data, extraction)) {
+    // V10: primero usa un motor determinístico especializado por formato. Pyodide queda como respaldo.
+    let data = SSTProfiles.analyze(extraction.text);
+    const profileConfidence = Number(data?.confianza_formato || 0);
+    const requiresFallback = data?.perfil_detectado?.id === 'GENERICO' || profileConfidence < Number(APP_CONFIG.highConfidenceProfileThreshold || 92) || (data?.campos_revision || []).length >= 2;
+    if (requiresFallback && await ensureLegacyParserForFallback()) {
       try {
-        updateProcessing(`Relectura visual ${index+1} de ${total}`, `${file.name} · OCR estructural automático`, (index+.74)/total);
+        const legacy = await SSTParser.analyze(extraction.text);
+        data = SSTProfiles.merge(data, legacy);
+        data.modo_validacion = `${data.modo_validacion || 'Motor por formato V10'} + respaldo clínico`;
+      } catch (error) { console.warn('Parser legado:', error); }
+    }
+
+    // OCR integral solo se usa cuando la estructura sigue incompleta; ya no se aplica indiscriminadamente.
+    if (ocrEnabled && needsOcrRescue(data, extraction) && profileConfidence < 96) {
+      try {
+        updateProcessing(`OCR de rescate ${index+1}/${total}`, `${file.name} · solo por baja confianza`, (index+.67)/total);
         const ocrExtraction = await SSTPdf.extract(blob, { ocrEnabled:true, forceOcr:true, onProgress: (p) => {
-          const fractional = (index + .72 + (((p.page-1) + .5) / Math.max(1,p.total)) * .08) / total;
-          updateProcessing(`Relectura visual ${index+1} de ${total}`, `${file.name} · ${p.message}`, fractional);
+          updateProcessing(`OCR ${index+1}/${total}`, `${file.name} · ${p.message}`, (index+.7)/total);
         }});
-        const ocrData = await SSTParser.analyze(ocrExtraction.text);
-        // Prioriza cobertura clínica y estructura de tabla, no solo cantidad de texto.
-        const originalCoverage = Number(data?.cobertura_recomendaciones?.con_recomendacion || 0);
-        const ocrCoverage = Number(ocrData?.cobertura_recomendaciones?.con_recomendacion || 0);
-        const betterLayout = Number(ocrExtraction?.layoutStats?.tabRows || 0) > Number(extraction?.layoutStats?.tabRows || 0);
-        if (ocrCoverage > originalCoverage || (ocrCoverage === originalCoverage && betterLayout) || extractionScore(ocrData) > extractionScore(data) + 3) {
+        let ocrData = SSTProfiles.analyze(ocrExtraction.text);
+        if ((ocrData?.campos_revision || []).length >= 2 && await ensureLegacyParserForFallback()) {
+          try { ocrData = SSTProfiles.merge(ocrData, await SSTParser.analyze(ocrExtraction.text)); } catch (_) {}
+        }
+        if (extractionScore(ocrData) > extractionScore(data) + 2 || Number(ocrData?.confianza_formato || 0) > profileConfidence) {
           extraction = ocrExtraction;
           data = ocrData;
-          data.modo_validacion = 'Motor clínico V8 + OCR estructural automático';
+          data.modo_validacion = `${data.modo_validacion || 'Motor por formato V10'} + OCR de rescate`;
         }
-      } catch (error) { console.warn('OCR estructural de respaldo:', error); }
+      } catch (error) { console.warn('OCR de rescate:', error); }
     }
 
     data.fecha = data.fecha || SSTUtils.todayIso();
     data.lugar = data.lugar || 'Tunja';
     let aiError = '';
-    if (aiEnabled && aiReady && file.size <= APP_CONFIG.maxGeminiPdfMb*1024*1024) {
+    if (!deferAi && aiEnabled && aiReady && file.size <= APP_CONFIG.maxGeminiPdfMb*1024*1024) {
       try {
-        updateProcessing(`Validando con IA ${index+1} de ${total}`, `${file.name} · auditoría visual completa`, (index+.82)/total);
+        updateProcessing(`Auditoría IA ${index+1}/${total}`, `${file.name} · ${data.perfil_documental || 'formato detectado'}`, (index+.82)/total);
         const aiData = await SSTBackend.call('geminiAnalyze', {
           fileName:file.name,
           pdfBase64:SSTUtils.arrayBufferToBase64(buffer),
           text:extraction.text.slice(0,50000),
           localData:data,
+          profileId:data?.perfil_detectado?.id || '',
+          profileConfidence:Number(data?.confianza_formato || 0),
           model:await SSTDB.getSetting('geminiModel', APP_CONFIG.defaultGeminiModel)
         }, { timeout:195000 });
-        data = await SSTParser.fuse(data, aiData, extraction.text);
-        data.validado_ia = true;
+        data = fuseAiV10(data, aiData);
       } catch (error) {
         aiError = error.message;
         console.warn('Gemini:', error);
-        data.modo_validacion = `${data.modo_validacion || 'Motor clínico V8'} · IA pendiente`;
+        data.modo_validacion = `${data.modo_validacion || 'Motor por formato V10'} · IA pendiente`;
       }
     } else if (aiEnabled && file.size > APP_CONFIG.maxGeminiPdfMb*1024*1024) {
       aiError = `PDF mayor a ${APP_CONFIG.maxGeminiPdfMb} MB; no puede enviarse a la validación IA.`;
@@ -582,7 +763,7 @@
     }
 
     const now = new Date().toISOString();
-    const aiWasValidated = !aiError && aiEnabled && aiReady && file.size <= APP_CONFIG.maxGeminiPdfMb*1024*1024;
+    const aiWasValidated = !deferAi && !aiError && aiEnabled && aiReady && file.size <= APP_CONFIG.maxGeminiPdfMb*1024*1024;
     const row = {
       id:staleId || crypto.randomUUID(), hash, fileName:file.name, size:file.size, type:'application/pdf', blob,
       text:extraction.text, pageCount:extraction.pageCount, usedOcr:extraction.usedOcr,
@@ -597,44 +778,78 @@
     const oldIndex = state.documents.findIndex((d) => d.id === row.id);
     if (oldIndex >= 0) state.documents.splice(oldIndex,1);
     state.documents.unshift(row);
-    state.selectedDocId = row.id;
-    state.selectedOriginalId = row.id;
     state.selectedBatchIds.add(row.id);
-    updateProcessing(`Completado ${index+1} de ${total}`, data.nombre || file.name, (index+1)/total);
     return { reused:false, row };
   }
 
   async function handleFiles(fileList, options = {}) {
-    const files = [...fileList].filter((f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
+    let files = [...fileList].filter((f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
     if (!files.length) return toast('Selecciona archivos PDF', 'No se encontraron certificados compatibles.', 'warn');
+    if (files.length > Number(APP_CONFIG.maxBatchFiles || 50)) {
+      toast('Lote limitado', `Se procesarán los primeros ${APP_CONFIG.maxBatchFiles || 50} PDF. Divide lotes mayores para conservar estabilidad y trazabilidad.`, 'warn', 9000);
+      files = files.slice(0, Number(APP_CONFIG.maxBatchFiles || 50));
+    }
     $('processingBanner').classList.remove('hidden');
     const failures = [];
     let completed = 0;
     try {
-      if (!state.parserReady) await SSTParser.init((msg,p) => updateProcessing('Preparando motor clínico', msg, p*0.15));
-      state.parserReady = true;
       const aiEnabled = true;
       const ocrEnabled = await SSTDB.getSetting('ocrEnabled', true);
       const aiReady = await ensureAiReady({ notify:false });
-      if (!aiReady) toast('IA pendiente', state.aiStatus?.detail || 'El motor local seguirá extrayendo; la auditoría IA se reintentará cuando el backend esté autorizado.', 'warn', 8500);
+      if (!aiReady) toast('IA pendiente', state.aiStatus?.detail || 'El motor especializado seguirá extrayendo; la generación quedará bloqueada hasta completar la auditoría IA.', 'warn', 8500);
+      const concurrency = Math.max(1, Number(APP_CONFIG.localConcurrency || 3));
+      updateProcessing('Preparando lote', `${files.length} PDF · ${concurrency} procesos simultáneos`, .02);
 
-      for (let index=0; index<files.length; index++) {
+      // Fase 1: lectura local de TODO el lote. La latencia de la API no bloquea PDF.js/OCR/perfiles.
+      const localResults = await runBoundedPool(files, concurrency, async (file,index) => {
         try {
-          await processUploadedFileV8(files[index], index, files.length, { aiEnabled, aiReady, ocrEnabled, options });
+          const result = await processUploadedFileV10(file, index, files.length, { aiEnabled, aiReady, ocrEnabled, options, deferAi:true });
           completed += 1;
+          updateProcessing(`Lectura local ${completed}/${files.length}`, `${result?.row?.data?.nombre || file.name} · estructura lista`, .55 * (completed/files.length));
+          return result;
         } catch (error) {
-          console.error(`Error procesando ${files[index].name}:`, error);
-          failures.push({ file:files[index].name, message:error?.message || String(error) });
-          updateProcessing(`Archivo con error ${index+1} de ${files.length}`, `${files[index].name} · se continúa con los demás`, (index+1)/files.length);
+          console.error(`Error procesando ${file.name}:`, error);
+          failures.push({ file:file.name, message:error?.message || String(error) });
+          completed += 1;
+          updateProcessing(`Lectura local ${completed}/${files.length}`, `${file.name} · error; se continúa`, .55 * (completed/files.length));
+          return null;
         }
+      });
+
+      // Fase 2: auditoría visual en una cola independiente y limitada. Esto mejora el
+      // rendimiento de lotes de 20–50 PDF y evita que una respuesta lenta congele la extracción.
+      const rowsForAi = localResults.map((x) => x?.row).filter(Boolean).filter((doc) => needsAutomaticAiAudit(doc));
+      if (aiReady && rowsForAi.length) {
+        let aiDone = 0;
+        const aiConcurrency = Math.max(1, Number(APP_CONFIG.aiConcurrency || 3));
+        updateProcessing('Auditoría IA por lotes', `${rowsForAi.length} PDF · ${aiConcurrency} auditorías simultáneas`, .57);
+        await runBoundedPool(rowsForAi, aiConcurrency, async (doc) => {
+          try {
+            const buffer = await doc.blob.arrayBuffer();
+            await runAutomaticAiAudit(doc, {
+              buffer, sourceText:doc.text || '',
+              title:`Auditoría IA ${aiDone+1}/${rowsForAi.length}`,
+              ratio:.57 + .40 * ((aiDone+1)/rowsForAi.length)
+            });
+          } catch (error) {
+            console.warn(`Auditoría IA ${doc.fileName}:`, error);
+            failures.push({ file:doc.fileName, message:`IA: ${error?.message || String(error)}` });
+          } finally {
+            aiDone += 1;
+            updateProcessing(`Auditoría IA ${aiDone}/${rowsForAi.length}`, `${doc.data?.nombre || doc.fileName}`, .57 + .40 * (aiDone/rowsForAi.length));
+          }
+        });
       }
+
       state.documents.sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+      state.selectedDocId = state.documents[0]?.id || state.selectedDocId;
+      state.selectedOriginalId = state.documents[0]?.id || state.selectedOriginalId;
       await renderAll();
       showView('documents');
       if (failures.length) {
-        toast('Lote procesado con novedades', `${completed} archivo(s) cargados correctamente; ${failures.length} fallaron. ${failures.slice(0,2).map((x)=>`${x.file}: ${x.message}`).join(' | ')}`, 'warn', 12000);
+        toast('Lote procesado con novedades', `${files.length-failures.length} archivo(s) correctos; ${failures.length} con error. ${failures.slice(0,2).map((x)=>`${x.file}: ${x.message}`).join(' | ')}`, 'warn', 12000);
       } else {
-        toast('Carga completada', `${completed} archivo(s) procesados correctamente.`, 'success');
+        toast('Lote completado', `${files.length} PDF procesados con motores especializados y auditoría IA.`, 'success', 6500);
       }
     } catch (error) {
       console.error(error);
@@ -704,9 +919,11 @@
         pdfBase64:SSTUtils.arrayBufferToBase64(buffer),
         text:sourceText.slice(0,50000),
         localData:doc.data,
+        profileId:doc.data?.perfil_detectado?.id || '',
+        profileConfidence:Number(doc.data?.confianza_formato || 0),
         model:await SSTDB.getSetting('geminiModel', APP_CONFIG.defaultGeminiModel)
       }, { timeout:195000 });
-      doc.data = await SSTParser.fuse(doc.data, aiData, sourceText);
+      doc.data = fuseAiV10(doc.data, aiData);
       doc.data.validado_ia = true;
       doc.aiError = '';
       doc.aiValidationStatus = 'validated';
@@ -873,14 +1090,21 @@
     const meta = await SSTBackend.call('getSharedAssetsMeta');
     for (const kind of ['template','signature']) {
       const remote = meta?.[kind];
-      if (!remote) continue;
       const local = await SSTDB.get(SSTDB.stores.assets, kind);
+      // Si el administrador restauró la plantilla/firma base, no conservar una copia
+      // compartida obsoleta en IndexedDB de otros equipos.
+      if (!remote) {
+        if (local?.shared === true) await SSTDB.delete(SSTDB.stores.assets, kind);
+        continue;
+      }
       if (local?.hash && remote.hash && local.hash === remote.hash) continue;
       const asset = await SSTBackend.call('getSharedAsset', { kind }, { timeout: 60000 });
       if (!asset?.found || !asset.base64) continue;
       const bytes = SSTUtils.base64ToUint8(asset.base64);
       const blob = new Blob([bytes], { type: asset.mime || 'application/octet-stream' });
-      await SSTDB.put(SSTDB.stores.assets, { key:kind, name:asset.name, mime:blob.type, blob, hash:asset.hash || await SSTUtils.sha256Bytes(bytes.buffer), updatedAt:asset.updatedAt || new Date().toISOString(), shared:true });
+      const row = { key:kind, name:asset.name, mime:blob.type, blob, hash:asset.hash || await SSTUtils.sha256Bytes(bytes.buffer), updatedAt:asset.updatedAt || new Date().toISOString(), shared:true };
+      if (kind === 'template') row.validation = await SSTDocx.validateTemplate(await blob.arrayBuffer());
+      await SSTDB.put(SSTDB.stores.assets, row);
     }
   }
 
@@ -990,9 +1214,9 @@
     const openFile=()=>$('pdfInput').click(); $('btnQuickUpload').addEventListener('click',()=>{showView('documents');openFile();}); $('btnUploadMain').addEventListener('click',openFile); $('dropZone').addEventListener('click',openFile); $('pdfInput').addEventListener('change',(e)=>{handleFiles(e.target.files);e.target.value='';});
     for(const type of ['dragenter','dragover'])$('dropZone').addEventListener(type,(e)=>{e.preventDefault();$('dropZone').classList.add('dragover');}); for(const type of ['dragleave','drop'])$('dropZone').addEventListener(type,(e)=>{e.preventDefault();$('dropZone').classList.remove('dragover');}); $('dropZone').addEventListener('drop',(e)=>handleFiles(e.dataTransfer.files));
     $('documentSearch').addEventListener('input',renderDocumentList); $('documentList').addEventListener('click',async(e)=>{const check=e.target.closest('.batch-select');if(check){e.stopPropagation();const id=check.dataset.batchId;check.checked?state.selectedBatchIds.add(id):state.selectedBatchIds.delete(id);renderBatchSelectionSummary();return;}const del=e.target.closest('[data-delete-doc]');if(del){e.preventDefault();e.stopPropagation();await deleteDocumentById(del.dataset.deleteDoc);return;}const item=e.target.closest('[data-doc-id]');if(item){state.selectedDocId=item.dataset.docId;renderDocumentList();renderEditor();}}); $('recentDocuments').addEventListener('click',(e)=>{const item=e.target.closest('[data-dashboard-doc]');if(item){state.selectedDocId=item.dataset.dashboardDoc;showView('documents');renderDocumentList();renderEditor();}});
-    ['fieldName','fieldId','fieldEmail','fieldRole','fieldExamType','fieldDate','fieldPlace','fieldSurveillance','fieldObservations','fieldReferrals','fieldExams','fieldPending'].forEach((id)=>$(id).addEventListener('input',syncEditorToState));
+    ['fieldName','fieldId','fieldEmail','fieldRole','fieldExamType','fieldDate','fieldPlace','fieldSurveillance','fieldObservations','fieldReferrals','fieldRestrictions','fieldExams','fieldPending'].forEach((id)=>$(id).addEventListener('input',syncEditorToState));
     $('recommendationGroups').addEventListener('input',syncEditorToState); $('recommendationGroups').addEventListener('click',(e)=>{if(e.target.classList.contains('remove-group')){e.target.closest('.recommendation-card').remove();syncEditorToState();}}); $('btnAddRecommendationGroup').addEventListener('click',()=>{const wrapper=document.createElement('div');wrapper.className='recommendation-card';wrapper.innerHTML='<div class="recommendation-card-head"><input class="rec-exam" value="Nuevo examen" aria-label="Examen"><button class="remove-group" type="button">×</button></div><textarea class="rec-text" rows="4" placeholder="Detalle completo del examen. Puedes separar hallazgos por línea; al generar se integrarán en un solo párrafo."></textarea>';$('recommendationGroups').appendChild(wrapper);wrapper.querySelector('.rec-exam').select();syncEditorToState();});
-    $('btnDeleteSelected').addEventListener('click',()=>{const d=selectedDocument();if(d)deleteDocumentById(d.id);else toast('Sin selección','Selecciona un certificado.','warn');}); $('btnValidateAiSelected').addEventListener('click',validateSelectedWithAi); $('btnGenerateSelected').addEventListener('click',generateSelected); $('btnGenerateSelectedBatch')?.addEventListener('click',generateSelectedBatch); $('btnGenerateAll').addEventListener('click',generateAll); $('btnGenerateAll2').addEventListener('click',generateAll); $('btnSelectAllDocs')?.addEventListener('click',()=>{state.documents.forEach((d)=>state.selectedBatchIds.add(d.id));renderDocumentList();}); $('btnClearDocSelection')?.addEventListener('click',()=>{state.selectedBatchIds.clear();renderDocumentList();}); $('btnPreviewOriginal').addEventListener('click',()=>openOriginalModal(selectedDocument())); $('btnClearLoaded').addEventListener('click',clearLoadedDocuments);
+    $('btnDeleteSelected').addEventListener('click',()=>{const d=selectedDocument();if(d)deleteDocumentById(d.id);else toast('Sin selección','Selecciona un certificado.','warn');}); $('btnResolveQualityReview')?.addEventListener('click',async()=>{const doc=selectedDocument();if(!doc)return;syncEditorToState();doc.data.campos_revision=[];doc.data.revision_manual_at=new Date().toISOString();doc.dirty=true;doc.updatedAt=doc.data.revision_manual_at;await SSTDB.put(SSTDB.stores.documents,doc);renderEditor();renderDocumentList();renderDashboard();renderControlTable();toast('Revisión manual registrada','El control de calidad quedó marcado como resuelto para este certificado.','success');}); $('btnValidateAiSelected').addEventListener('click',validateSelectedWithAi); $('btnGenerateSelected').addEventListener('click',generateSelected); $('btnGenerateSelectedBatch')?.addEventListener('click',generateSelectedBatch); $('btnGenerateAll').addEventListener('click',generateAll); $('btnGenerateAll2').addEventListener('click',generateAll); $('btnSelectAllDocs')?.addEventListener('click',()=>{state.documents.forEach((d)=>state.selectedBatchIds.add(d.id));renderDocumentList();}); $('btnClearDocSelection')?.addEventListener('click',()=>{state.selectedBatchIds.clear();renderDocumentList();}); $('btnPreviewOriginal').addEventListener('click',()=>openOriginalModal(selectedDocument())); $('btnClearLoaded').addEventListener('click',clearLoadedDocuments);
     $('originalList').addEventListener('click',async(e)=>{const del=e.target.closest('[data-delete-doc]');if(del){e.preventDefault();e.stopPropagation();await deleteDocumentById(del.dataset.deleteDoc);return;}const item=e.target.closest('[data-original-id]');if(item){state.selectedOriginalId=item.dataset.originalId;state.originalPage=1;renderOriginals();}}); $('btnPrevPage').addEventListener('click',()=>{if(state.originalPage>1){state.originalPage--;renderOriginals();}}); $('btnNextPage').addEventListener('click',()=>{const d=state.documents.find((x)=>x.id===state.selectedOriginalId);if(d&&state.originalPage<(d.pageCount||1)){state.originalPage++;renderOriginals();}}); $('btnDownloadOriginal').addEventListener('click',()=>{const d=state.documents.find((x)=>x.id===state.selectedOriginalId);if(d)SSTUtils.downloadBlob(d.blob,`ORIGINAL_${d.fileName}`);}); $('btnIndexOriginals').addEventListener('click',()=>{renderOriginals();toast('Índice actualizado',`${state.documents.length} PDF disponibles sin reprocesar.`,'success');});
     $('generatedList').addEventListener('click',(e)=>{const item=e.target.closest('[data-output-id]');if(item){state.selectedOutputId=item.dataset.outputId;renderGenerated();}}); $('btnDownloadGenerated').addEventListener('click',()=>{const o=selectedOutput();if(o)SSTUtils.downloadBlob(o.blob,o.filename);}); $('btnDownloadZip').addEventListener('click',async()=>{if(!state.outputs.length)return toast('Sin archivos','No hay documentos para comprimir.','warn');try{const zip=await SSTGenerator.makeZip(state.outputs);SSTUtils.downloadBlob(zip,`Lote_SST_JER_SA_${SSTUtils.todayIso().replaceAll('-','')}.zip`);}catch(e){toast('No se pudo crear el ZIP',e.message,'error');}});
     $('emailRecipients').addEventListener('input',(e)=>{if(e.target.matches('.email-to')){const id=e.target.dataset.emailTo,d=state.documents.find((x)=>x.id===id);if(d){d.data.correo=e.target.value.trim();d.updatedAt=new Date().toISOString();SSTDB.put(SSTDB.stores.documents,d);}}updateEmailPreview();}); $('emailRecipients').addEventListener('change',updateEmailPreview); $('emailSubject').addEventListener('input',updateEmailPreview); $('emailBody').addEventListener('input',updateEmailPreview); $('btnSelectAllEmail').addEventListener('click',()=>{qsa('.email-select').forEach((x)=>x.checked=true);updateEmailPreview();}); $('btnSendEmails').addEventListener('click',sendEmails);
