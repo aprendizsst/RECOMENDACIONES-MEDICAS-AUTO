@@ -1,5 +1,5 @@
 const APP_NAME = 'Portal SST · Recomendaciones Médicas';
-const BACKEND_VERSION = '2026.09.04-v10.9-two-sheet-routing';
+const BACKEND_VERSION = '2026.09.04-v10.13-ai-batch-recalibrated';
 const GEMINI_GENERATE_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models/';
 const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
 const SESSION_HOURS = 8;
@@ -135,7 +135,7 @@ function apiDispatch(requestJson) {
     const sessionToken = String(req.session || '');
 
     switch (action) {
-      case 'ping': return { ok: true, message: 'Google Apps Script conectado', app: APP_NAME, backendVersion: BACKEND_VERSION, capabilities:['documentSync','sheetDiagnostics','batchConsecutives','twoSheetRouting','sstLogSync','correspondenceSync','geminiAudit','email','emailMultiAttachment'], time: new Date().toISOString() };
+      case 'ping': return { ok: true, message: 'Google Apps Script conectado', app: APP_NAME, backendVersion: BACKEND_VERSION, capabilities:['documentSync','sheetDiagnostics','batchConsecutives','twoSheetRouting','sstLogSync','correspondenceSync','geminiAudit','geminiFallback','geminiBackoff','geminiBatchModel','email','emailMultiAttachment'], time: new Date().toISOString() };
       case 'bootstrapStatus': return bootstrapStatus_();
       case 'register': return register_(payload);
       case 'login': return login_(payload);
@@ -436,11 +436,24 @@ function extractGeminiJson_(bodyText) {
   catch (error) { throw new Error('Gemini devolvió JSON inválido: ' + text.slice(0,600)); }
 }
 
+function isTransientGeminiStatus_(status) {
+  return [408, 429, 500, 502, 503, 504].indexOf(Number(status)) >= 0;
+}
+
+function geminiBackoffMs_(attempt) {
+  // Backoff exponencial + jitter. Mantiene la Web App dentro de tiempos razonables,
+  // pero evita reintentos simultáneos cuando Gemini está saturado.
+  const base = 1100 * Math.pow(2, Math.max(0, attempt));
+  const jitter = Math.floor(Math.random() * 700);
+  return Math.min(9000, base + jitter);
+}
+
 function geminiRequest_(apiKey, model, pdfBase64, prompt) {
   const cleanModel = String(model || DEFAULT_GEMINI_MODEL).replace(/^models\//,'').trim();
   const url = GEMINI_GENERATE_BASE_URL + encodeURIComponent(cleanModel) + ':generateContent';
   let lastError = null;
-  for (let attempt=0; attempt<3; attempt++) {
+  const maxAttempts = 2;
+  for (let attempt=0; attempt<maxAttempts; attempt++) {
     let response;
     try {
       response = UrlFetchApp.fetch(url, {
@@ -456,17 +469,23 @@ function geminiRequest_(apiKey, model, pdfBase64, prompt) {
         throw new Error('Gemini no está autorizado en Apps Script. Ejecuta manualmente authorizePortalServices() desde el editor, acepta el permiso de solicitudes externas y vuelve a publicar una nueva versión de la Web App. Detalle: ' + msg);
       }
       lastError = error;
-      if (attempt < 2) { Utilities.sleep(900 * Math.pow(2,attempt)); continue; }
+      if (attempt < maxAttempts - 1) { Utilities.sleep(geminiBackoffMs_(attempt)); continue; }
       throw error;
     }
     const status = response.getResponseCode();
-    if (status >= 200 && status < 300) return extractGeminiJson_(response.getContentText());
+    if (status >= 200 && status < 300) {
+      const data = extractGeminiJson_(response.getContentText());
+      data._transport_attempts = attempt + 1;
+      data._transport_model = cleanModel;
+      return data;
+    }
     const detail = response.getContentText().slice(0,1200);
-    const err = new Error('Gemini HTTP ' + status + ': ' + detail); err.status = status; lastError = err;
-    // En procesamiento masivo, 429/503 pueden ser transitorios. Reintenta el mismo modelo
-    // con backoff antes de saltar a otro modelo o marcar el PDF como pendiente.
-    if ((status === 429 || status === 503 || status === 500) && attempt < 2) {
-      Utilities.sleep(1200 * Math.pow(2,attempt));
+    const err = new Error('Gemini HTTP ' + status + ': ' + detail);
+    err.status = status;
+    err.retryable = isTransientGeminiStatus_(status);
+    lastError = err;
+    if (err.retryable && attempt < maxAttempts - 1) {
+      Utilities.sleep(geminiBackoffMs_(attempt));
       continue;
     }
     throw err;
@@ -506,7 +525,14 @@ function geminiAnalyze_(user, payload) {
   const profileConfidence = Number(payload.profileConfidence || localData?.confianza_formato || 0);
   const text = String(payload.text || '').slice(0,50000);
   const preferred = String(payload.model || props.getProperty('GEMINI_MODEL') || DEFAULT_GEMINI_MODEL).replace(/^models\//,'').trim();
-  const models = [preferred, DEFAULT_GEMINI_MODEL, 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'].filter(function(v,i,a){ return v && a.indexOf(v) === i; });
+  const batchMode = payload.batchMode === true;
+  // Para lotes grandes priorizamos Gemini 2.5 Flash estable: Google lo posiciona
+  // para baja latencia y alto volumen. 3.8 Flash queda como auditor de mayor
+  // capacidad y respaldo, no como cuello de botella para 40–50 PDF.
+  const models = (batchMode
+    ? [preferred, 'gemini-2.5-flash', 'gemini-2.5-flash-lite', DEFAULT_GEMINI_MODEL]
+    : [preferred, DEFAULT_GEMINI_MODEL, 'gemini-2.5-flash', 'gemini-2.5-flash-lite']
+  ).filter(function(v,i,a){ return v && a.indexOf(v) === i; });
   const prompt = `Eres un AUDITOR DOCUMENTAL especializado en conceptos médicos ocupacionales colombianos. Tu tarea es EXTRAER lo que está escrito o marcado visualmente en el PDF; nunca completar por conocimiento clínico ni inferir datos que el documento no indique.
 
 MÉTODO OBLIGATORIO:
@@ -603,11 +629,16 @@ Devuelve el JSON COMPLETO corregido. Si algo no tiene evidencia visual, elimína
       data._fragmentos_pendientes = [];
       return data;
     } catch (error) {
-      lastError = error.message;
-      if (error.status !== 404 && error.status !== 429 && error.status !== 503) break;
+      lastError = error && error.message ? error.message : String(error);
+      const status = Number(error && error.status || 0);
+      // 404: modelo no disponible. 408/429/5xx: fallo transitorio o saturación.
+      // En esos casos se prueba el siguiente modelo compatible sin perder la extracción local.
+      if (status !== 404 && !isTransientGeminiStatus_(status)) break;
     }
   }
-  throw new Error(lastError || 'Gemini no devolvió una extracción utilizable.');
+  const finalError = new Error(lastError || 'Gemini no devolvió una extracción utilizable.');
+  finalError.retryable = /HTTP (408|429|500|502|503|504)|UNAVAILABLE|overwhelmed|temporar/i.test(lastError || '');
+  throw finalError;
 }
 
 function compactCell_(value, maxLen) {
@@ -760,7 +791,7 @@ function backendDiagnostics_(user, payload) {
   return {
     ok:true,
     backendVersion:BACKEND_VERSION,
-    capabilities:['documentSync','sheetDiagnostics','batchConsecutives','twoSheetRouting','sstLogSync','correspondenceSync','geminiAudit','email','emailMultiAttachment'],
+    capabilities:['documentSync','sheetDiagnostics','batchConsecutives','twoSheetRouting','sstLogSync','correspondenceSync','geminiAudit','geminiFallback','geminiBackoff','geminiBatchModel','email','emailMultiAttachment'],
     portalDatabase:{ name:db.getName(), id:db.getId(), documentSheet:documentSheet.getName(), documentRows:Math.max(0,documentSheet.getLastRow()-1) },
     consecutive:consecutive,
     consecutiveData:consecutiveData,

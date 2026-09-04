@@ -1,22 +1,28 @@
-# Despliegue V10.11
+# Despliegue V10.13
 
 ## GitHub Pages
-1. Sube **el contenido** de esta carpeta a la raíz del repositorio.
-2. Conserva `.github/workflows/deploy.yml`.
-3. En GitHub: **Settings → Pages → Source: GitHub Actions**.
-4. Haz commit a `main`.
-5. En **Actions**, confirma que `Desplegar Recomendaciones Médicas` finalice en verde.
-6. Recarga la web con `Ctrl + F5`.
 
-La acción publica únicamente los archivos necesarios y valida que los JavaScript esenciales existan antes de desplegar.
+Sube el contenido de esta carpeta a la raíz del repositorio y verifica que GitHub Pages use **GitHub Actions**. El workflow `.github/workflows/deploy.yml` publica únicamente los archivos necesarios del portal.
+
+Después del despliegue realiza una recarga fuerte del navegador: `Ctrl + F5`.
 
 ## Google Apps Script
-El backend incluido sigue siendo `2026.09.04-v10.9-two-sheet-routing`.
-Si tu Web App ya muestra exactamente esa versión, **no necesitas volver a desplegar Apps Script por el cambio visual V10.11**.
 
-Si tu backend es anterior, copia en Apps Script:
+V10.13 cambia la lógica de auditoría IA, por lo que debes reemplazar en Apps Script:
+
 - `backend/Code.gs`
 - `backend/BackendBridge.html`
 - `backend/appsscript.json`
 
-Después: **Implementar → Administrar implementaciones → Editar → Nueva versión → Implementar**.
+Luego ve a **Implementar → Administrar implementaciones → Editar → Nueva versión → Implementar**.
+
+La aplicación debe mostrar el backend:
+
+`2026.09.04-v10.13-ai-batch-recalibrated`
+
+## Prueba recomendada
+
+1. Carga un lote pequeño de 5 PDF.
+2. Comprueba que `Auditoría IA` avance hasta `5 / 5`.
+3. Si Gemini devuelve un 429/503, espera la recuperación automática o pulsa **Reintentar IA pendientes**.
+4. Verifica que `Revisión clínica` solo aumente por conflictos materiales o campos realmente incompletos.

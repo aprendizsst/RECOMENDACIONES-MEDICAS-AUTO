@@ -1,32 +1,31 @@
-# Portal SST · Recomendaciones Médicas V10.11
+# Portal SST · Recomendaciones Médicas V10.13
 
-Versión limpia de producción con tema púrpura oscuro de alto contraste y auditoría de regresión funcional.
+V10.13 conserva la interfaz púrpura, los motores especializados, procesamiento masivo, plantillas Word/PDF, correo individual/masivo y enrutamiento de Google Sheets de las versiones anteriores, y recalibra la auditoría IA para lotes grandes.
 
-## Funcionalidad conservada y verificada
-- Dos motores especializados: `JER_TABLA` y `CONTROL_PERIODICO`, con fallback genérico.
-- Detección estructural por formato, normalización clínica y auditoría visual con Gemini.
-- Procesamiento masivo de hasta 50 PDF (`4` extracciones locales y `3` auditorías IA concurrentes).
-- Estados `REALIZADO`, `NORMAL`, `NO APLICA` y `APTO` tratados como estados, no como recomendaciones pendientes.
-- Normalización semántica del tipo de examen para evitar falsos positivos entre sinónimos.
-- Bloqueo de generación cuando quedan campos clínicos obligatorios o discrepancias reales sin resolver.
-- Plantilla DOCX validada por marcadores; Word, PDF y vista previa salen de la misma plantilla activa.
-- Exámenes realizados impresos solo por nombre, sin `- REALIZADO`.
-- Recomendaciones agrupadas en un único párrafo cohesivo por examen, sin omitir el detalle clínico.
-- Restricciones, observaciones, PVE/SVE y remisiones conservadas por separado.
-- Vista previa del PDF original ajustada al ancho y navegación por página.
-- Correo individual o a un destinatario común, selección de documentos y adjuntos en PDF, Word o ambos.
-- División automática del envío masivo cuando el peso supera el límite seguro.
-- Google Sheets V10.9: consecutivos y registro SST en archivos separados, más base técnica `DocumentosProcesados`.
-- Diagnóstico de Apps Script, prueba de escritura y validación estricta de versión del backend.
-- GitHub Pages estático: sin Vite, React ni Firebase.
+## Cambios principales
 
-## Interfaz V10.11
-- Fondo berenjena/negro, paneles púrpura profundo y acentos violeta/lila.
-- Contraste reforzado para textos, formularios, navegación, tablas, estados y botones.
-- Estados de éxito/advertencia/error mantienen verde, dorado y coral para lectura inmediata.
-- Foco visible para navegación por teclado.
+- El tablero separa **Revisión clínica** de **Auditoría IA pendiente**.
+- Los perfiles `JER_TABLA` y `CONTROL_PERIODICO` conservan prioridad cuando la extracción estructural es de alta confianza.
+- Diferencias de redacción, puntuación, lugar, observaciones o formato de fecha ya no generan revisiones falsas.
+- Se mantienen como conflictos materiales: identificación distinta, tipo de examen realmente contradictorio, fecha realmente distinta, nombre claramente incompatible, remisión negativa vs positiva y campos clínicos faltantes.
+- En lotes se prioriza `gemini-2.5-flash` estable y se mantienen `gemini-3.8-flash` y `gemini-2.5-flash-lite` como respaldo.
+- Los errores transitorios 408/429/5xx usan reintentos, cambio de modelo y una recuperación diferida.
+- Botón **Reintentar IA pendientes** para completar la auditoría sin volver a cargar los PDF.
+
+## Funcionalidades conservadas
+
+- Hasta 50 PDF por lote.
+- Motores JER, Control Periódico y fallback genérico.
+- Estados `REALIZADO`, `NORMAL`, `NO APLICA` y `APTO` tratados como estados, no recomendaciones.
+- Normalización semántica del tipo de examen.
+- Recomendaciones completas por examen y salida compacta en párrafos.
+- Exámenes realizados impresos solo por nombre.
+- Restricciones, observaciones, remisiones y PVE/SVE independientes.
+- Plantilla DOCX validada y generación Word/PDF.
+- Vista previa del PDF original ajustada al ancho.
+- Correo individual o a un destinatario común, con PDF, Word o ambos y selección de archivos.
+- Consecutivos, base técnica `DocumentosProcesados`, registro SST y sincronización con Google Sheets.
 
 ## Backend requerido
-`2026.09.04-v10.9-two-sheet-routing`
 
-Los archivos de Apps Script están únicamente en `backend/`.
+`2026.09.04-v10.13-ai-batch-recalibrated`

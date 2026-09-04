@@ -183,7 +183,7 @@
         <section class="view-section" data-view-panel="documents">
           <div class="toolbar-row">
             <div><span class="eyebrow">INGESTA Y REVISIÓN</span><h2>Documentos</h2><p>Clasifica automáticamente el formato, extrae con un motor especializado, audita con IA y procesa lotes de hasta 50 PDF con control de calidad por archivo.</p></div>
-            <div class="toolbar-actions"><button id="btnClearLoaded" class="btn danger">Eliminar cargados</button><button id="btnGenerateSelectedBatch" class="btn secondary">Vista previa seleccionados</button><button id="btnGenerateAll" class="btn secondary">Vista previa de todo el lote</button><button id="btnUploadMain" class="btn primary">＋ Cargar PDF</button></div>
+            <div class="toolbar-actions"><button id="btnClearLoaded" class="btn danger">Eliminar cargados</button><button id="btnRetryPendingAi" class="btn secondary">↻ Reintentar IA pendientes</button><button id="btnGenerateSelectedBatch" class="btn secondary">Vista previa seleccionados</button><button id="btnGenerateAll" class="btn secondary">Vista previa de todo el lote</button><button id="btnUploadMain" class="btn primary">＋ Cargar PDF</button></div>
           </div>
 
           <input id="pdfInput" type="file" accept="application/pdf,.pdf" multiple hidden />
@@ -195,8 +195,8 @@
             <div><small>Formato JER</small><strong id="batchJerCount">0</strong></div>
             <div><small>Control periódico</small><strong id="batchControlCount">0</strong></div>
             <div><small>Extracción alta</small><strong id="batchHighCount">0</strong></div>
-            <div><small>Requieren revisión</small><strong id="batchReviewCount">0</strong></div>
-            <div class="wide"><small>Auditoría IA</small><strong id="batchAiSummary">0 / 0</strong></div>
+            <div><small>Revisión clínica</small><strong id="batchReviewCount">0</strong></div>
+            <div class="wide"><small>Auditoría IA</small><strong id="batchAiSummary">0 / 0</strong><em id="batchAiPending">0 pendientes</em></div>
           </div>
 
           <div class="workspace-grid">

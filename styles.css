@@ -157,3 +157,5 @@ input:focus,textarea:focus,select:focus{border-color:#a78bfa;box-shadow:0 0 0 3p
 
 /* Accesibilidad de estados */
 .status-dot.success,.mini-status.ai{background:#34d399}.status-dot.warn,.mini-status.warn{background:#f6c453}.status-dot.error{background:#fb7185}
+
+.batch-insight-strip .wide{align-items:center;flex-wrap:wrap}.batch-insight-strip .wide em{width:100%;font-style:normal;font-size:.68rem;color:#a994ba;text-align:right}.batch-insight-strip .wide em.ok{color:#80d7b0}.batch-insight-strip .wide em.warn{color:#f3bd6b}

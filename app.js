@@ -6,7 +6,7 @@
     selectedOriginalId: null, originalPage: 1, selectedOutputId: null,
     user: null, localMode: false, backendOnline: false, backendInfo: null,
     controlTab: 'validation', lastCacheStats: { generated: 0, reused: 0 },
-    parserReady: false, authBootstrap: null, selectedBatchIds: new Set(), selectedEmailIds: new Set(), emailMode: 'individual', emailFormat: 'PDF', aiStatus: null
+    parserReady: false, authBootstrap: null, selectedBatchIds: new Set(), selectedEmailIds: new Set(), emailMode: 'individual', emailFormat: 'PDF', aiStatus: null, aiRecoveryScheduled: false, aiRecoveryPasses: 0
   };
 
   let originalRenderSequence = 0;
@@ -236,6 +236,20 @@
     return doc.aiValidationVersion !== APP_CONFIG.aiValidationVersion || doc.aiValidationStatus !== 'validated' || !doc.aiValidatedAt;
   }
 
+  function isTransientAiError(errorOrText) {
+    const text = String(errorOrText?.message || errorOrText || '');
+    return /Gemini HTTP (408|429|500|502|503|504)|UNAVAILABLE|overwhelmed|temporar(?:y|ily)|rate.?limit|RESOURCE_EXHAUSTED|service unavailable/i.test(text);
+  }
+
+  function friendlyAiError(errorOrText) {
+    const text = String(errorOrText?.message || errorOrText || '');
+    if (isTransientAiError(text)) return 'Gemini está temporalmente saturado. La extracción local quedó guardada y el certificado seguirá pendiente de auditoría IA; puedes reintentar sin volver a cargar el PDF.';
+    if (/404|model.*not found|modelo.*no.*disponible/i.test(text)) return 'El modelo de IA configurado no está disponible. El backend intentó modelos alternativos; revisa la configuración de Gemini si el problema continúa.';
+    return text || 'No fue posible completar la auditoría IA.';
+  }
+
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
   async function ensureAiReady(options = {}) {
     const { notify = false } = options;
     if (!state.backendOnline || state.localMode) {
@@ -279,7 +293,8 @@
         localData: doc.data,
         profileId:doc.data?.perfil_detectado?.id || '',
         profileConfidence:Number(doc.data?.confianza_formato || 0),
-        model: await SSTDB.getSetting('geminiModel', APP_CONFIG.defaultGeminiModel)
+        model: options.batchMode ? (APP_CONFIG.batchGeminiModel || 'gemini-2.5-flash') : await SSTDB.getSetting('geminiModel', APP_CONFIG.defaultGeminiModel),
+        batchMode: !!options.batchMode
       }, { timeout:195000 });
       doc.data = fuseAiV10(doc.data, aiData);
       doc.data.validado_ia = true;
@@ -291,14 +306,16 @@
       await SSTDB.put(SSTDB.stores.documents, doc);
       return doc;
     } catch (error) {
-      doc.aiError = error.message;
-      doc.aiValidationStatus = 'error';
+      doc.aiError = friendlyAiError(error);
+      doc.aiValidationStatus = isTransientAiError(error) ? 'retryable_error' : 'error';
       doc.aiValidationVersion = APP_CONFIG.aiValidationVersion;
       doc.aiLastAttemptAt = new Date().toISOString();
       doc.updatedAt = doc.aiLastAttemptAt;
-      if (doc.data) doc.data.modo_validacion = 'Respaldo local · IA pendiente';
+      if (doc.data) doc.data.modo_validacion = isTransientAiError(error) ? 'Motor especializado validado localmente · IA en reintento' : 'Respaldo local · IA pendiente';
       await SSTDB.put(SSTDB.stores.documents, doc);
-      throw error;
+      const wrapped = new Error(doc.aiError);
+      wrapped.transientAi = isTransientAiError(error);
+      throw wrapped;
     }
   }
 
@@ -319,18 +336,39 @@
     let ok = 0, failed = 0;
     try {
       let done = 0;
-      const aiConcurrency = Math.max(1, Number(APP_CONFIG.aiConcurrency || 3));
+      const retryQueue = [];
+      const aiConcurrency = Math.max(1, Number(APP_CONFIG.aiConcurrency || 2));
       await runBoundedPool(pending, aiConcurrency, async (doc) => {
         try {
-          await runAutomaticAiAudit(doc, { title:`IA automática ${done+1} de ${pending.length}`, ratio:(done+.7)/pending.length });
+          await runAutomaticAiAudit(doc, { title:`IA automática ${done+1} de ${pending.length}`, ratio:(done+.7)/pending.length, batchMode:true });
           ok++;
-        } catch (error) { failed++; console.warn(`IA automática ${doc.fileName}:`, error); }
-        finally { done++; }
+        } catch (error) {
+          if (error?.transientAi || isTransientAiError(error)) retryQueue.push(doc);
+          else failed++;
+          console.warn(`IA automática ${doc.fileName}:`, error);
+        } finally { done++; }
       });
+      // Segunda pasada controlada y secuencial solo para saturación/429/5xx.
+      // Evita que un pico temporal deje documentos sin validar en lotes grandes.
+      if (retryQueue.length) {
+        await sleep(3500);
+        for (let i=0; i<retryQueue.length; i++) {
+          const doc = retryQueue[i];
+          try {
+            await runAutomaticAiAudit(doc, { title:`Reintento IA ${i+1}/${retryQueue.length}`, ratio:.88 + .10*((i+1)/retryQueue.length), batchMode:true });
+            ok++;
+          } catch (error) {
+            failed++;
+            console.warn(`Reintento IA ${doc.fileName}:`, error);
+          }
+          if (i < retryQueue.length - 1) await sleep(1800);
+        }
+      }
       try { if (ok) await syncDocumentsToBackend(pending.filter((d)=>d.aiValidationStatus==='validated'), { silent:true }); }
       catch (syncError) { console.warn('Sincronización posterior a IA:', syncError); }
       await renderAll();
-      if (ok) toast('Validación IA automática', `${ok} certificado(s) auditado(s)${failed ? ` · ${failed} pendiente(s)` : ''}.`, failed ? 'warn' : 'success', 6500);
+      scheduleAiRecoveryPass();
+      if (ok || failed) toast('Validación IA automática', `${ok} certificado(s) auditado(s)${failed ? ` · ${failed} pendiente(s) para reintento` : ''}.`, failed ? 'warn' : 'success', 6500);
     } finally {
       setTimeout(() => $('processingBanner').classList.add('hidden'), 500);
     }
@@ -462,8 +500,11 @@
     const control=state.documents.filter((d)=>d.data?.perfil_detectado?.id==='CONTROL_PERIODICO').length;
     const high=state.documents.filter((d)=>String(d.data?.calidad_extraccion||'').toLowerCase()==='alta').length;
     const validated=state.documents.filter((d)=>d.aiValidationStatus==='validated' || d.data?.validado_ia).length;
-    const review=state.documents.filter((d)=>d.dirty || (d.data?.campos_revision||[]).length || d.aiValidationStatus==='error' || d.aiValidationStatus==='pending_auth').length;
+    const pendingAi=Math.max(0,total-validated);
+    const review=state.documents.filter((d)=>d.dirty || (d.data?.campos_revision||[]).some(isClinicalReviewFlag)).length;
     $('batchJerCount').textContent=jer; $('batchControlCount').textContent=control; $('batchHighCount').textContent=high; $('batchReviewCount').textContent=review; $('batchAiSummary').textContent=`${validated} / ${total}`;
+    if($('batchAiPending')) { $('batchAiPending').textContent=pendingAi ? `${pendingAi} pendiente${pendingAi===1?'':'s'}` : 'Auditoría completa'; $('batchAiPending').className=pendingAi?'warn':'ok'; }
+    if($('btnRetryPendingAi')) $('btnRetryPendingAi').disabled=pendingAi===0 || !state.backendOnline || state.localMode;
   }
 
   function renderDocumentList() {
@@ -471,7 +512,7 @@
     const docs = state.documents.filter((d) => documentMatches(d, query));
     $('docListCount').textContent = state.documents.length;
     $('documentList').innerHTML = docs.length ? docs.map((d) => {
-      const aiState = d.aiValidationStatus === 'validated' ? 'IA validada' : (d.aiValidationStatus === 'pending_auth' ? 'IA pendiente' : (d.aiValidationStatus === 'error' ? 'IA con error' : 'IA pendiente'));
+      const aiState = d.aiValidationStatus === 'validated' ? 'IA validada' : (d.aiValidationStatus === 'retryable_error' ? 'IA en reintento' : (d.aiValidationStatus === 'pending_auth' ? 'IA pendiente de autorización' : (d.aiValidationStatus === 'error' ? 'IA con error' : 'IA pendiente')));
       return `<div class="document-item ${d.id === state.selectedDocId ? 'active' : ''}" data-doc-id="${d.id}"><label class="batch-check" title="Incluir en vista previa/lote"><input type="checkbox" class="batch-select" data-batch-id="${d.id}" ${state.selectedBatchIds.has(d.id) ? 'checked' : ''}><span></span></label><div class="doc-icon">PDF</div><div class="doc-main"><strong>${SSTUtils.escapeHtml(d.data?.nombre || 'Sin nombre')}</strong><small>${SSTUtils.escapeHtml(d.fileName)}</small><em>${d.dirty ? 'Editado · requiere actualizar salida' : `${aiState} · ${d.data?.perfil_documental || 'Formato detectado'} · ${Number(d.data?.confianza_formato || 0)}% · ${(d.data?.restricciones_lista || []).length} restr.`}</em></div><span class="mini-status ${d.aiValidationStatus === 'validated' ? 'ai' : (d.dirty ? 'warn' : '')}"></span><button class="item-delete" type="button" data-delete-doc="${d.id}" title="Eliminar este archivo" aria-label="Eliminar ${SSTUtils.escapeHtml(d.fileName)}">×</button></div>`;
     }).join('') : '<div class="empty-state compact"><span>▣</span><strong>Sin certificados</strong></div>';
     renderBatchSelectionSummary();
@@ -506,7 +547,8 @@
     $('editorSourceFile').textContent = doc.fileName; $('editorPersonTitle').textContent = d.nombre || 'Trabajador sin identificar'; $('editorValidationMode').textContent = `${d.modo_validacion || 'Motor local'} · ${d.perfil_documental || 'Formato genérico'} · Calidad ${d.calidad_extraccion || '—'}`;
     const aiOk = doc.aiValidationStatus === 'validated';
     const review = (d.campos_revision || []).length ? ` · revisar ${(d.campos_revision || []).join(', ')}` : '';
-    $('editorStatusText').textContent = doc.dirty ? `Editado · ${aiOk ? 'IA validada' : 'IA pendiente'}${review}` : `${aiOk ? 'IA validada automáticamente' : 'IA pendiente'}${review}`;
+    const aiPendingLabel = doc.aiValidationStatus === 'retryable_error' ? 'IA pendiente por saturación temporal' : 'IA pendiente';
+    $('editorStatusText').textContent = doc.dirty ? `Editado · ${aiOk ? 'IA validada' : aiPendingLabel}${review}` : `${aiOk ? 'IA validada automáticamente' : aiPendingLabel}${review}`;
     $('editorStatusDot').className = `status-dot ${aiOk && !doc.dirty ? 'success' : 'warn'}`;
     if ($('btnValidateAiSelected')) {
       $('btnValidateAiSelected').classList.toggle('hidden', aiOk);
@@ -651,6 +693,58 @@
     return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[^A-Z0-9]+/g,' ').trim();
   }
 
+  function tokenSimilarity(a, b) {
+    const aa=new Set(semanticSignature(a).split(' ').filter((x)=>x.length>1));
+    const bb=new Set(semanticSignature(b).split(' ').filter((x)=>x.length>1));
+    if(!aa.size || !bb.size) return 0;
+    let common=0; for(const x of aa) if(bb.has(x)) common++;
+    return common / Math.max(aa.size, bb.size);
+  }
+
+  function normalizeIdValue(value) { return String(value || '').replace(/\D/g,''); }
+
+  function normalizeDateValue(value) {
+    const raw=String(value||'').trim(); if(!raw)return '';
+    const iso=raw.match(/\b(20\d{2})[-\/.](\d{1,2})[-\/.](\d{1,2})\b/);
+    if(iso) return `${iso[1]}-${String(iso[2]).padStart(2,'0')}-${String(iso[3]).padStart(2,'0')}`;
+    const lat=raw.match(/\b(\d{1,2})[-\/.](\d{1,2})[-\/.](20\d{2})\b/);
+    if(lat) return `${lat[3]}-${String(lat[2]).padStart(2,'0')}-${String(lat[1]).padStart(2,'0')}`;
+    return semanticSignature(raw);
+  }
+
+  function remittancePolarity(value) {
+    const n=semanticSignature(value);
+    if(!n || /^(NO|NO APLICA|SIN REMISIONES?|NINGUNA?)$/.test(n)) return 'NONE';
+    return 'POSITIVE';
+  }
+
+  function materialScalarConflict(key, localValue, aiValue) {
+    const l=String(localValue||'').trim(), a=String(aiValue||'').trim();
+    if(!l || !a) return false;
+    if(key==='tipo_examen') {
+      const cmp=SSTProfiles.compareExamTypes ? SSTProfiles.compareExamTypes(l,a) : {materialConflict:false};
+      return !!cmp.materialConflict;
+    }
+    if(key==='identificacion') {
+      const li=normalizeIdValue(l), ai=normalizeIdValue(a); return !!li && !!ai && li!==ai;
+    }
+    if(key==='fecha') return normalizeDateValue(l)!==normalizeDateValue(a);
+    if(key==='nombre') return tokenSimilarity(l,a)<0.55;
+    if(key==='correo') return l.toLowerCase()!==a.toLowerCase();
+    if(key==='cargo') return tokenSimilarity(l,a)<0.25;
+    if(key==='remisiones') return remittancePolarity(l)!==remittancePolarity(a);
+    // Lugar y observaciones pueden variar por OCR, puntuación o redacción. En perfiles
+    // de alta confianza se conserva el valor local y no se bloquea por diferencias de estilo.
+    return false;
+  }
+
+  function isClinicalReviewFlag(flag) {
+    const n=String(flag||'').toLowerCase();
+    if(!n) return false;
+    if(/gemini|ia pendiente|ia en reintento|saturad|temporalm/.test(n)) return false;
+    return true;
+  }
+
   function mergeDetailedTextLists(values) {
     const out=[];
     for (const raw of values || []) {
@@ -752,20 +846,26 @@
       }
 
       if(semanticSignature(localValue)===semanticSignature(aiValue)) { out[key]=key==='observaciones'?SSTProfiles.normalizeClinicalText(aiValue):aiValue; continue; }
-      const narrative=['observaciones','remisiones','lugar'].includes(key);
-      if(narrative){
-        const l=semanticSignature(localValue), a=semanticSignature(aiValue);
-        if(l.includes(a)||a.includes(l)) out[key]=a.length>l.length?aiValue:localValue;
-        else if(highProfile) reviewFlags.push(`discrepancia IA: ${key}`);
-        else out[key]=aiValue;
-      } else if(highProfile) {
-        reviewFlags.push(`discrepancia IA: ${key}`);
-      } else out[key]=aiValue;
+      if(highProfile) {
+        // Perfil conocido + extracción alta: el parser estructural conserva prioridad.
+        // La IA solo abre revisión si la diferencia es MATERIAL, no por redacción,
+        // puntuación, formato de fecha, orden de nombres u OCR menor.
+        out[key]=localValue;
+        if(materialScalarConflict(key, localValue, aiValue)) reviewFlags.push(`discrepancia IA material: ${key}`);
+      } else {
+        const narrative=['observaciones','remisiones','lugar'].includes(key);
+        if(narrative){
+          const l=semanticSignature(localValue), a=semanticSignature(aiValue);
+          out[key]=(l.includes(a)||a.includes(l)) ? (a.length>l.length?aiValue:localValue) : aiValue;
+        } else out[key]=aiValue;
+      }
     }
     if (Array.isArray(ai.examenes_realizados) && ai.examenes_realizados.length) {
       const localExams=local.examenes_lista||[];
       out.examenes_lista=mergeDetailedTextLists([...(localExams||[]),...ai.examenes_realizados]);
-      if(highProfile && localExams.length && ai.examenes_realizados.length && Math.abs(localExams.length-ai.examenes_realizados.length)>=2) reviewFlags.push('discrepancia IA: exámenes realizados');
+      // En perfiles de alta confianza una lista IA más corta no invalida la tabla local.
+      // La unión conserva exámenes detectados por cualquiera de los motores sin crear
+      // una revisión solo por diferencias de conteo.
     }
     const aiMap = aiMapToObject(ai);
     out.recomendaciones_por_examen = mergeRecommendationMaps(local.recomendaciones_por_examen || {}, aiMap);
@@ -790,7 +890,8 @@
     // no una recomendación faltante. Solo conserva la alerta general de Gemini cuando
     // persiste una incertidumbre verificable después de fusionar recomendaciones y estados.
     const unresolvedCoverage = unresolvedExamCoverage(out);
-    if(ai.revision_requerida===true && (unresolvedCoverage.length || reviewFlags.some((x)=>String(x).includes('discrepancia')) || missing.length)) reviewFlags.push('auditoría IA solicita revisión');
+    const materialDiscrepancy = reviewFlags.some((x)=>String(x).toLowerCase().includes('discrepancia ia material'));
+    if(ai.revision_requerida===true && (unresolvedCoverage.length || materialDiscrepancy || missing.length)) reviewFlags.push('auditoría IA solicita revisión');
     out.campos_revision = [...new Set([...reviewFlags,...missing].filter(Boolean))];
     out.calidad_extraccion = out.campos_revision.length ? 'Revisar' : 'Alta';
     return out;
@@ -899,7 +1000,7 @@
         }, { timeout:195000 });
         data = fuseAiV10(data, aiData);
       } catch (error) {
-        aiError = error.message;
+        aiError = friendlyAiError(error);
         console.warn('Gemini:', error);
         data.modo_validacion = `${data.modo_validacion || 'Motor por formato V10'} · IA pendiente`;
       }
@@ -916,7 +1017,7 @@
       text:extraction.text, pageCount:extraction.pageCount, usedOcr:extraction.usedOcr,
       layoutStats:extraction.layoutStats || {}, aiError, data,
       pipelineVersion:APP_CONFIG.pipelineVersion,
-      aiValidationStatus: aiWasValidated ? 'validated' : (file.size > APP_CONFIG.maxGeminiPdfMb*1024*1024 ? 'skipped_size' : (!aiReady ? 'pending_auth' : (aiError ? 'error' : 'pending'))),
+      aiValidationStatus: aiWasValidated ? 'validated' : (file.size > APP_CONFIG.maxGeminiPdfMb*1024*1024 ? 'skipped_size' : (!aiReady ? 'pending_auth' : (aiError ? (isTransientAiError(aiError) ? 'retryable_error' : 'error') : 'pending'))),
       aiValidationVersion: aiWasValidated ? APP_CONFIG.aiValidationVersion : '',
       aiValidatedAt: aiWasValidated ? now : '', aiLastAttemptAt: aiError ? now : '',
       dirty:false, createdAt:cached?.createdAt || now, updatedAt:now
@@ -930,6 +1031,7 @@
   }
 
   async function handleFiles(fileList, options = {}) {
+    state.aiRecoveryPasses = 0;
     let files = [...fileList].filter((f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf'));
     if (!files.length) return toast('Selecciona archivos PDF', 'No se encontraron certificados compatibles.', 'warn');
     if (files.length > Number(APP_CONFIG.maxBatchFiles || 50)) {
@@ -968,7 +1070,8 @@
       const rowsForAi = localResults.map((x) => x?.row).filter(Boolean).filter((doc) => needsAutomaticAiAudit(doc));
       if (aiReady && rowsForAi.length) {
         let aiDone = 0;
-        const aiConcurrency = Math.max(1, Number(APP_CONFIG.aiConcurrency || 3));
+        const retryQueue = [];
+        const aiConcurrency = Math.max(1, Number(APP_CONFIG.aiConcurrency || 2));
         updateProcessing('Auditoría IA por lotes', `${rowsForAi.length} PDF · ${aiConcurrency} auditorías simultáneas`, .57);
         await runBoundedPool(rowsForAi, aiConcurrency, async (doc) => {
           try {
@@ -976,16 +1079,31 @@
             await runAutomaticAiAudit(doc, {
               buffer, sourceText:doc.text || '',
               title:`Auditoría IA ${aiDone+1}/${rowsForAi.length}`,
-              ratio:.57 + .40 * ((aiDone+1)/rowsForAi.length)
+              ratio:.57 + .31 * ((aiDone+1)/rowsForAi.length), batchMode:true
             });
           } catch (error) {
             console.warn(`Auditoría IA ${doc.fileName}:`, error);
-            failures.push({ file:doc.fileName, message:`IA: ${error?.message || String(error)}` });
+            if (error?.transientAi || isTransientAiError(error)) retryQueue.push(doc);
+            else failures.push({ file:doc.fileName, message:`IA: ${error?.message || String(error)}` });
           } finally {
             aiDone += 1;
-            updateProcessing(`Auditoría IA ${aiDone}/${rowsForAi.length}`, `${doc.data?.nombre || doc.fileName}`, .57 + .40 * (aiDone/rowsForAi.length));
+            updateProcessing(`Auditoría IA ${aiDone}/${rowsForAi.length}`, `${doc.data?.nombre || doc.fileName}`, .57 + .31 * (aiDone/rowsForAi.length));
           }
         });
+        if (retryQueue.length) {
+          updateProcessing('Reintento IA controlado', `${retryQueue.length} PDF temporalmente saturado(s) · cola secuencial`, .89);
+          await sleep(3500);
+          for (let i=0; i<retryQueue.length; i++) {
+            const doc = retryQueue[i];
+            try {
+              const buffer = await doc.blob.arrayBuffer();
+              await runAutomaticAiAudit(doc, { buffer, sourceText:doc.text || '', title:`Reintento IA ${i+1}/${retryQueue.length}`, ratio:.89 + .09*((i+1)/retryQueue.length), batchMode:true });
+            } catch (error) {
+              failures.push({ file:doc.fileName, message:`IA temporalmente no disponible: ${friendlyAiError(error)}` });
+            }
+            if (i < retryQueue.length - 1) await sleep(1800);
+          }
+        }
       }
 
       const processedDocs = localResults.map((x) => x?.row).filter(Boolean);
@@ -1003,6 +1121,7 @@
       state.selectedDocId = state.documents[0]?.id || state.selectedDocId;
       state.selectedOriginalId = state.documents[0]?.id || state.selectedOriginalId;
       await renderAll();
+      scheduleAiRecoveryPass();
       showView('documents');
       if (failures.length) {
         toast('Lote procesado con novedades', `${files.length-failures.length} archivo(s) correctos; ${failures.length} con error. ${failures.slice(0,2).map((x)=>`${x.file}: ${x.message}`).join(' | ')}`, 'warn', 12000);
@@ -1015,6 +1134,18 @@
     } finally {
       setTimeout(() => $('processingBanner').classList.add('hidden'), 500);
     }
+  }
+
+  function scheduleAiRecoveryPass() {
+    if(state.aiRecoveryScheduled || state.aiRecoveryPasses >= 2 || !state.backendOnline || state.localMode) return;
+    const pending=state.documents.filter((d)=>d.aiValidationStatus==='retryable_error');
+    if(!pending.length) return;
+    state.aiRecoveryScheduled=true;
+    state.aiRecoveryPasses += 1;
+    setTimeout(async()=>{
+      state.aiRecoveryScheduled=false;
+      try { await autoAuditPendingDocuments(); } catch(error) { console.warn('Recuperación IA diferida:', error); }
+    }, Number(APP_CONFIG.aiRecoveryDelayMs || 12000));
   }
 
   function updateProcessing(title, detail, ratio) { $('processingTitle').textContent = title; $('processingDetail').textContent = detail; $('processingProgress').style.width = `${Math.round(Math.max(0,Math.min(1,ratio))*100)}%`; }
@@ -1096,14 +1227,15 @@
       await renderAll();
       toast('Validación IA completada', `${doc.data?.nombre || doc.fileName} · ${(doc.data?.campos_revision || []).length ? 'quedan campos por revisar' : 'sin alertas estructurales'}.`, (doc.data?.campos_revision || []).length ? 'warn' : 'success', 7500);
     } catch (error) {
-      doc.aiError = error.message;
-      doc.aiValidationStatus = 'error';
+      const transient = isTransientAiError(error);
+      doc.aiError = friendlyAiError(error);
+      doc.aiValidationStatus = transient ? 'retryable_error' : 'error';
       doc.aiValidationVersion = APP_CONFIG.aiValidationVersion;
       doc.aiLastAttemptAt = new Date().toISOString();
       doc.updatedAt = doc.aiLastAttemptAt;
       await SSTDB.put(SSTDB.stores.documents, doc);
       renderDocumentList(); renderEditor();
-      toast('La IA no pudo validar', error.message, 'error', 9000);
+      toast(transient ? 'Gemini está temporalmente saturado' : 'La IA no pudo validar', doc.aiError, transient ? 'warn' : 'error', 10000);
     } finally {
       setTimeout(() => $('processingBanner').classList.add('hidden'), 500);
     }
@@ -1564,7 +1696,7 @@
     $('documentSearch').addEventListener('input',renderDocumentList); $('documentList').addEventListener('click',async(e)=>{const check=e.target.closest('.batch-select');if(check){e.stopPropagation();const id=check.dataset.batchId;check.checked?state.selectedBatchIds.add(id):state.selectedBatchIds.delete(id);renderBatchSelectionSummary();return;}const del=e.target.closest('[data-delete-doc]');if(del){e.preventDefault();e.stopPropagation();await deleteDocumentById(del.dataset.deleteDoc);return;}const item=e.target.closest('[data-doc-id]');if(item){state.selectedDocId=item.dataset.docId;renderDocumentList();renderEditor();}}); $('recentDocuments').addEventListener('click',(e)=>{const item=e.target.closest('[data-dashboard-doc]');if(item){state.selectedDocId=item.dataset.dashboardDoc;showView('documents');renderDocumentList();renderEditor();}});
     ['fieldName','fieldId','fieldEmail','fieldRole','fieldExamType','fieldDate','fieldPlace','fieldSurveillance','fieldObservations','fieldReferrals','fieldRestrictions','fieldExams','fieldPending'].forEach((id)=>$(id).addEventListener('input',syncEditorToState));
     $('recommendationGroups').addEventListener('input',syncEditorToState); $('recommendationGroups').addEventListener('click',(e)=>{if(e.target.classList.contains('remove-group')){e.target.closest('.recommendation-card').remove();syncEditorToState();}}); $('btnAddRecommendationGroup').addEventListener('click',()=>{const wrapper=document.createElement('div');wrapper.className='recommendation-card';wrapper.innerHTML='<div class="recommendation-card-head"><input class="rec-exam" value="Nuevo examen" aria-label="Examen"><button class="remove-group" type="button">×</button></div><textarea class="rec-text" rows="4" placeholder="Detalle completo del examen. Puedes separar hallazgos por línea; al generar se integrarán en un solo párrafo."></textarea>';$('recommendationGroups').appendChild(wrapper);wrapper.querySelector('.rec-exam').select();syncEditorToState();});
-    $('btnDeleteSelected').addEventListener('click',()=>{const d=selectedDocument();if(d)deleteDocumentById(d.id);else toast('Sin selección','Selecciona un certificado.','warn');}); $('btnResolveQualityReview')?.addEventListener('click',async()=>{const doc=selectedDocument();if(!doc)return;syncEditorToState();doc.data.campos_revision=[];doc.data.revision_manual_at=new Date().toISOString();doc.dirty=true;doc.updatedAt=doc.data.revision_manual_at;await SSTDB.put(SSTDB.stores.documents,doc);try{await syncDocumentsToBackend([doc],{silent:true});}catch(syncError){doc.remoteSyncStatus='error';doc.remoteSyncError=syncError.message;await SSTDB.put(SSTDB.stores.documents,doc);}renderEditor();renderDocumentList();renderDashboard();renderControlTable();toast('Revisión manual registrada','El control de calidad quedó marcado como resuelto para este certificado.','success');}); $('btnValidateAiSelected').addEventListener('click',validateSelectedWithAi); $('btnGenerateSelected').addEventListener('click',generateSelected); $('btnGenerateSelectedBatch')?.addEventListener('click',generateSelectedBatch); $('btnGenerateAll').addEventListener('click',generateAll); $('btnGenerateAll2').addEventListener('click',generateAll); $('btnSelectAllDocs')?.addEventListener('click',()=>{state.documents.forEach((d)=>state.selectedBatchIds.add(d.id));renderDocumentList();}); $('btnClearDocSelection')?.addEventListener('click',()=>{state.selectedBatchIds.clear();renderDocumentList();}); $('btnPreviewOriginal').addEventListener('click',()=>openOriginalModal(selectedDocument())); $('btnClearLoaded').addEventListener('click',clearLoadedDocuments);
+    $('btnDeleteSelected').addEventListener('click',()=>{const d=selectedDocument();if(d)deleteDocumentById(d.id);else toast('Sin selección','Selecciona un certificado.','warn');}); $('btnResolveQualityReview')?.addEventListener('click',async()=>{const doc=selectedDocument();if(!doc)return;syncEditorToState();doc.data.campos_revision=[];doc.data.revision_manual_at=new Date().toISOString();doc.dirty=true;doc.updatedAt=doc.data.revision_manual_at;await SSTDB.put(SSTDB.stores.documents,doc);try{await syncDocumentsToBackend([doc],{silent:true});}catch(syncError){doc.remoteSyncStatus='error';doc.remoteSyncError=syncError.message;await SSTDB.put(SSTDB.stores.documents,doc);}renderEditor();renderDocumentList();renderDashboard();renderControlTable();toast('Revisión manual registrada','El control de calidad quedó marcado como resuelto para este certificado.','success');}); $('btnRetryPendingAi')?.addEventListener('click',()=>{state.aiRecoveryScheduled=false;state.aiRecoveryPasses=0;autoAuditPendingDocuments().catch((error)=>toast('No fue posible reintentar IA',error.message,'error',9000));}); $('btnValidateAiSelected').addEventListener('click',validateSelectedWithAi); $('btnGenerateSelected').addEventListener('click',generateSelected); $('btnGenerateSelectedBatch')?.addEventListener('click',generateSelectedBatch); $('btnGenerateAll').addEventListener('click',generateAll); $('btnGenerateAll2').addEventListener('click',generateAll); $('btnSelectAllDocs')?.addEventListener('click',()=>{state.documents.forEach((d)=>state.selectedBatchIds.add(d.id));renderDocumentList();}); $('btnClearDocSelection')?.addEventListener('click',()=>{state.selectedBatchIds.clear();renderDocumentList();}); $('btnPreviewOriginal').addEventListener('click',()=>openOriginalModal(selectedDocument())); $('btnClearLoaded').addEventListener('click',clearLoadedDocuments);
     $('originalList').addEventListener('click',async(e)=>{const del=e.target.closest('[data-delete-doc]');if(del){e.preventDefault();e.stopPropagation();await deleteDocumentById(del.dataset.deleteDoc);return;}const item=e.target.closest('[data-original-id]');if(item){state.selectedOriginalId=item.dataset.originalId;state.originalPage=1;renderOriginals();}}); $('btnPrevPage').addEventListener('click',()=>{if(state.originalPage>1){state.originalPage--;renderOriginals();}}); $('btnNextPage').addEventListener('click',()=>{const d=state.documents.find((x)=>x.id===state.selectedOriginalId);if(d&&state.originalPage<(d.pageCount||1)){state.originalPage++;renderOriginals();}}); $('btnDownloadOriginal').addEventListener('click',()=>{const d=state.documents.find((x)=>x.id===state.selectedOriginalId);if(d)SSTUtils.downloadBlob(d.blob,`ORIGINAL_${d.fileName}`);}); $('btnIndexOriginals').addEventListener('click',()=>{renderOriginals();toast('Índice actualizado',`${state.documents.length} PDF disponibles sin reprocesar.`,'success');});
     $('generatedList').addEventListener('click',(e)=>{const item=e.target.closest('[data-output-id]');if(item){state.selectedOutputId=item.dataset.outputId;renderGenerated();}}); $('btnDownloadGenerated').addEventListener('click',()=>{const o=selectedOutput();if(o)SSTUtils.downloadBlob(o.blob,o.filename);}); $('btnDownloadZip').addEventListener('click',async()=>{if(!state.outputs.length)return toast('Sin archivos','No hay documentos para comprimir.','warn');try{const zip=await SSTGenerator.makeZip(state.outputs);SSTUtils.downloadBlob(zip,`Lote_SST_JER_SA_${SSTUtils.todayIso().replaceAll('-','')}.zip`);}catch(e){toast('No se pudo crear el ZIP',e.message,'error');}});
     $('emailRecipients').addEventListener('input',(e)=>{if(e.target.matches('.email-to')){const id=e.target.dataset.emailTo,d=state.documents.find((x)=>x.id===id);if(d){d.data.correo=e.target.value.trim();d.updatedAt=new Date().toISOString();SSTDB.put(SSTDB.stores.documents,d);}}updateEmailPreview();}); $('emailRecipients').addEventListener('change',(e)=>{if(e.target.matches('.email-select')){const id=e.target.dataset.emailId;e.target.checked?state.selectedEmailIds.add(id):state.selectedEmailIds.delete(id);}updateEmailPreview();}); $('emailSubject').addEventListener('input',updateEmailPreview); $('emailBody').addEventListener('input',updateEmailPreview); $('emailCommonTo').addEventListener('input',updateEmailPreview); $('btnSelectAllEmail').addEventListener('click',()=>{const allSelected=state.outputs.length&&state.selectedEmailIds.size===state.outputs.length;state.selectedEmailIds=allSelected?new Set():new Set(state.outputs.map((o)=>o.id));renderEmail();}); qsa('[data-email-mode]').forEach((b)=>b.addEventListener('click',async()=>{state.emailMode=b.dataset.emailMode;await SSTDB.setSetting('emailMode',state.emailMode);renderEmail();})); qsa('[data-email-format]').forEach((b)=>b.addEventListener('click',async()=>{state.emailFormat=b.dataset.emailFormat;await SSTDB.setSetting('emailAttachmentFormat',state.emailFormat);renderEmail();})); $('btnSendEmails').addEventListener('click',sendEmails);
