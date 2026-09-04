@@ -1,3 +1,12 @@
+
+## V10.14 · Recuperación de auditoría IA
+
+- Corrige la incompatibilidad entre `thinkingLevel` y modelos Gemini 2.5.
+- El lote usa `gemini-3.5-flash` y fallbacks Gemini 3.x compatibles.
+- Para lotes de más de 20 PDF la auditoría se serializa para reducir 429/503.
+- El botón **Probar IA real y validar pendientes** ejecuta una generación real antes de reintentar el lote.
+- Se conservan motores JER/CONTROL PERIODICO, plantillas, Word/PDF, correo masivo y sincronización con Sheets/consecutivos.
+
 # Despliegue V10.13
 
 ## GitHub Pages
@@ -18,7 +27,7 @@ Luego ve a **Implementar → Administrar implementaciones → Editar → Nueva v
 
 La aplicación debe mostrar el backend:
 
-`2026.09.04-v10.13-ai-batch-recalibrated`
+`2026.09.04-v10.14-ai-compatibility-recovery`
 
 ## Prueba recomendada
 

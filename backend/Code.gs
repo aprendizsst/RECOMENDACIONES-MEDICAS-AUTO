@@ -1,5 +1,5 @@
 const APP_NAME = 'Portal SST · Recomendaciones Médicas';
-const BACKEND_VERSION = '2026.09.04-v10.13-ai-batch-recalibrated';
+const BACKEND_VERSION = '2026.09.04-v10.14-ai-compatibility-recovery';
 const GEMINI_GENERATE_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models/';
 const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
 const SESSION_HOURS = 8;
@@ -135,7 +135,7 @@ function apiDispatch(requestJson) {
     const sessionToken = String(req.session || '');
 
     switch (action) {
-      case 'ping': return { ok: true, message: 'Google Apps Script conectado', app: APP_NAME, backendVersion: BACKEND_VERSION, capabilities:['documentSync','sheetDiagnostics','batchConsecutives','twoSheetRouting','sstLogSync','correspondenceSync','geminiAudit','geminiFallback','geminiBackoff','geminiBatchModel','email','emailMultiAttachment'], time: new Date().toISOString() };
+      case 'ping': return { ok: true, message: 'Google Apps Script conectado', app: APP_NAME, backendVersion: BACKEND_VERSION, capabilities:['documentSync','sheetDiagnostics','batchConsecutives','twoSheetRouting','sstLogSync','correspondenceSync','geminiAudit','geminiFallback','geminiBackoff','geminiBatchModel','geminiProbe','email','emailMultiAttachment'], time: new Date().toISOString() };
       case 'bootstrapStatus': return bootstrapStatus_();
       case 'register': return register_(payload);
       case 'login': return login_(payload);
@@ -150,6 +150,7 @@ function apiDispatch(requestJson) {
       case 'getSharedAsset': return getSharedAsset_(requireSession_(sessionToken), payload);
       case 'geminiAnalyze': return geminiAnalyze_(requireSession_(sessionToken), payload);
       case 'aiStatus': return aiStatus_(requireSession_(sessionToken));
+      case 'aiProbe': return aiProbe_(requireSession_(sessionToken), payload);
       case 'nextConsecutive': return nextConsecutive_(requireSession_(sessionToken), payload);
       case 'reserveConsecutives': return reserveConsecutives_(requireSession_(sessionToken), payload);
       case 'consecutiveStatus': return consecutiveStatus_(requireSession_(sessionToken));
@@ -407,7 +408,16 @@ function geminiSchema_() {
   }, required:['nombre','cargo','identificacion','correo','tipo_examen','lugar','fecha','examenes_realizados','estados_por_examen','recomendaciones_medicas','recomendaciones_por_examen','restricciones_laborales','vigilancia_programa','observaciones','remisiones','revision_requerida','evidencias'] };
 }
 
-function geminiPayload_(pdfBase64, prompt) {
+function geminiThinkingConfig_(model) {
+  const clean = String(model || '').replace(/^models\//,'').toLowerCase();
+  // Gemini 2.5 usa thinkingBudget. Gemini 3.x usa thinkingLevel.
+  // Enviar thinkingLevel a un modelo 2.5 provoca INVALID_ARGUMENT/HTTP 400.
+  if (/^gemini-2\.5(?:-|$)/.test(clean)) return { thinkingBudget:1024 };
+  if (/flash-lite/.test(clean)) return { thinkingLevel:'minimal' };
+  return { thinkingLevel:'low' };
+}
+
+function geminiPayload_(pdfBase64, prompt, model) {
   return {
     contents:[{ role:'user', parts:[
       { inlineData:{ mimeType:'application/pdf', data:pdfBase64 } },
@@ -416,9 +426,8 @@ function geminiPayload_(pdfBase64, prompt) {
     generationConfig:{
       responseMimeType:'application/json',
       responseSchema:geminiSchema_(),
-      // Extracción documental estructurada: 'low' reduce latencia en lotes sin desactivar
-      // la comprobación multimodal. El esquema JSON mantiene la salida determinística.
-      thinkingConfig:{ thinkingLevel:'low' }
+      // La configuración de razonamiento se adapta a la familia de modelo.
+      thinkingConfig:geminiThinkingConfig_(model)
     }
   };
 }
@@ -438,6 +447,14 @@ function extractGeminiJson_(bodyText) {
 
 function isTransientGeminiStatus_(status) {
   return [408, 429, 500, 502, 503, 504].indexOf(Number(status)) >= 0;
+}
+
+function isGeminiCompatibilityError_(status, message) {
+  const code = Number(status || 0);
+  const text = String(message || '');
+  if (code === 404) return true;
+  if (code !== 400) return false;
+  return /thinkingLevel|thinkingBudget|thinkingConfig|unsupported|not supported|INVALID_ARGUMENT|invalid argument|unknown field|model/i.test(text);
 }
 
 function geminiBackoffMs_(attempt) {
@@ -461,7 +478,7 @@ function geminiRequest_(apiKey, model, pdfBase64, prompt) {
         contentType:'application/json',
         muteHttpExceptions:true,
         headers:{'x-goog-api-key':apiKey},
-        payload:JSON.stringify(geminiPayload_(pdfBase64,prompt))
+        payload:JSON.stringify(geminiPayload_(pdfBase64,prompt,cleanModel))
       });
     } catch (error) {
       const msg = error && error.message ? error.message : String(error);
@@ -526,12 +543,12 @@ function geminiAnalyze_(user, payload) {
   const text = String(payload.text || '').slice(0,50000);
   const preferred = String(payload.model || props.getProperty('GEMINI_MODEL') || DEFAULT_GEMINI_MODEL).replace(/^models\//,'').trim();
   const batchMode = payload.batchMode === true;
-  // Para lotes grandes priorizamos Gemini 2.5 Flash estable: Google lo posiciona
-  // para baja latencia y alto volumen. 3.8 Flash queda como auditor de mayor
-  // capacidad y respaldo, no como cuello de botella para 40–50 PDF.
+  // Para lotes grandes priorizamos Gemini 3.5 Flash estable. Mantiene PDF + salida
+  // estructurada + thinkingLevel y evita la incompatibilidad de configuración que
+  // ocurría al usar Gemini 2.5 con thinkingLevel. 3.8 queda como respaldo de mayor capacidad.
   const models = (batchMode
-    ? [preferred, 'gemini-2.5-flash', 'gemini-2.5-flash-lite', DEFAULT_GEMINI_MODEL]
-    : [preferred, DEFAULT_GEMINI_MODEL, 'gemini-2.5-flash', 'gemini-2.5-flash-lite']
+    ? [preferred, 'gemini-3.5-flash', 'gemini-3.5-flash-lite', DEFAULT_GEMINI_MODEL, 'gemini-3.7-flash']
+    : [preferred, DEFAULT_GEMINI_MODEL, 'gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite']
   ).filter(function(v,i,a){ return v && a.indexOf(v) === i; });
   const prompt = `Eres un AUDITOR DOCUMENTAL especializado en conceptos médicos ocupacionales colombianos. Tu tarea es EXTRAER lo que está escrito o marcado visualmente en el PDF; nunca completar por conocimiento clínico ni inferir datos que el documento no indique.
 
@@ -633,7 +650,7 @@ Devuelve el JSON COMPLETO corregido. Si algo no tiene evidencia visual, elimína
       const status = Number(error && error.status || 0);
       // 404: modelo no disponible. 408/429/5xx: fallo transitorio o saturación.
       // En esos casos se prueba el siguiente modelo compatible sin perder la extracción local.
-      if (status !== 404 && !isTransientGeminiStatus_(status)) break;
+      if (!isGeminiCompatibilityError_(status, lastError) && !isTransientGeminiStatus_(status)) break;
     }
   }
   const finalError = new Error(lastError || 'Gemini no devolvió una extracción utilizable.');
@@ -791,7 +808,7 @@ function backendDiagnostics_(user, payload) {
   return {
     ok:true,
     backendVersion:BACKEND_VERSION,
-    capabilities:['documentSync','sheetDiagnostics','batchConsecutives','twoSheetRouting','sstLogSync','correspondenceSync','geminiAudit','geminiFallback','geminiBackoff','geminiBatchModel','email','emailMultiAttachment'],
+    capabilities:['documentSync','sheetDiagnostics','batchConsecutives','twoSheetRouting','sstLogSync','correspondenceSync','geminiAudit','geminiFallback','geminiBackoff','geminiBatchModel','geminiProbe','email','emailMultiAttachment'],
     portalDatabase:{ name:db.getName(), id:db.getId(), documentSheet:documentSheet.getName(), documentRows:Math.max(0,documentSheet.getLastRow()-1) },
     consecutive:consecutive,
     consecutiveData:consecutiveData,
@@ -1433,6 +1450,35 @@ function aiStatus_(user) {
       detail:String(error && error.message || error)
     };
   }
+}
+
+function aiProbe_(user, payload) {
+  const props = PropertiesService.getScriptProperties();
+  const apiKey = String(props.getProperty('GEMINI_API_KEY') || '').trim();
+  if (!apiKey) return { ok:false, ready:false, detail:'No hay API key de Gemini configurada.' };
+  const requested = String((payload && payload.model) || props.getProperty('GEMINI_MODEL') || DEFAULT_GEMINI_MODEL).replace(/^models\//,'').trim();
+  const candidates = [requested, 'gemini-3.5-flash', 'gemini-3.5-flash-lite', DEFAULT_GEMINI_MODEL, 'gemini-3.7-flash']
+    .filter(function(v,i,a){ return v && a.indexOf(v)===i; });
+  let last = '';
+  for (let i=0;i<candidates.length;i++) {
+    const model = candidates[i];
+    try {
+      const url = GEMINI_GENERATE_BASE_URL + encodeURIComponent(model) + ':generateContent';
+      const response = UrlFetchApp.fetch(url, {
+        method:'post', contentType:'application/json', muteHttpExceptions:true,
+        headers:{'x-goog-api-key':apiKey},
+        payload:JSON.stringify({
+          contents:[{role:'user',parts:[{text:'Responde únicamente OK'}]}],
+          generationConfig:{thinkingConfig:geminiThinkingConfig_(model), maxOutputTokens:24}
+        })
+      });
+      const status = response.getResponseCode();
+      if (status >= 200 && status < 300) return { ok:true, ready:true, model:model, status:status, detail:'Generación real de Gemini OK.' };
+      last = 'HTTP ' + status + ': ' + response.getContentText().slice(0,500);
+      if (!isGeminiCompatibilityError_(status,last) && !isTransientGeminiStatus_(status)) break;
+    } catch (error) { last = String(error && error.message || error); }
+  }
+  return { ok:false, ready:false, model:requested, detail:last || 'No fue posible completar una generación real de prueba.' };
 }
 
 function testGeminiPermission() {

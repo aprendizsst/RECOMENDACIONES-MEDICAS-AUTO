@@ -293,7 +293,7 @@
         localData: doc.data,
         profileId:doc.data?.perfil_detectado?.id || '',
         profileConfidence:Number(doc.data?.confianza_formato || 0),
-        model: options.batchMode ? (APP_CONFIG.batchGeminiModel || 'gemini-2.5-flash') : await SSTDB.getSetting('geminiModel', APP_CONFIG.defaultGeminiModel),
+        model: options.batchMode ? (APP_CONFIG.batchGeminiModel || 'gemini-3.5-flash') : await SSTDB.getSetting('geminiModel', APP_CONFIG.defaultGeminiModel),
         batchMode: !!options.batchMode
       }, { timeout:195000 });
       doc.data = fuseAiV10(doc.data, aiData);
@@ -337,7 +337,8 @@
     try {
       let done = 0;
       const retryQueue = [];
-      const aiConcurrency = Math.max(1, Number(APP_CONFIG.aiConcurrency || 2));
+      const configuredAiConcurrency = Math.max(1, Number(APP_CONFIG.aiConcurrency || 2));
+      const aiConcurrency = pending.length > 20 ? 1 : configuredAiConcurrency;
       await runBoundedPool(pending, aiConcurrency, async (doc) => {
         try {
           await runAutomaticAiAudit(doc, { title:`IA automática ${done+1} de ${pending.length}`, ratio:(done+.7)/pending.length, batchMode:true });
@@ -1071,7 +1072,8 @@
       if (aiReady && rowsForAi.length) {
         let aiDone = 0;
         const retryQueue = [];
-        const aiConcurrency = Math.max(1, Number(APP_CONFIG.aiConcurrency || 2));
+        const configuredAiConcurrency = Math.max(1, Number(APP_CONFIG.aiConcurrency || 2));
+        const aiConcurrency = rowsForAi.length > 20 ? 1 : configuredAiConcurrency;
         updateProcessing('Auditoría IA por lotes', `${rowsForAi.length} PDF · ${aiConcurrency} auditorías simultáneas`, .57);
         await runBoundedPool(rowsForAi, aiConcurrency, async (doc) => {
           try {
@@ -1701,7 +1703,16 @@
     $('generatedList').addEventListener('click',(e)=>{const item=e.target.closest('[data-output-id]');if(item){state.selectedOutputId=item.dataset.outputId;renderGenerated();}}); $('btnDownloadGenerated').addEventListener('click',()=>{const o=selectedOutput();if(o)SSTUtils.downloadBlob(o.blob,o.filename);}); $('btnDownloadZip').addEventListener('click',async()=>{if(!state.outputs.length)return toast('Sin archivos','No hay documentos para comprimir.','warn');try{const zip=await SSTGenerator.makeZip(state.outputs);SSTUtils.downloadBlob(zip,`Lote_SST_JER_SA_${SSTUtils.todayIso().replaceAll('-','')}.zip`);}catch(e){toast('No se pudo crear el ZIP',e.message,'error');}});
     $('emailRecipients').addEventListener('input',(e)=>{if(e.target.matches('.email-to')){const id=e.target.dataset.emailTo,d=state.documents.find((x)=>x.id===id);if(d){d.data.correo=e.target.value.trim();d.updatedAt=new Date().toISOString();SSTDB.put(SSTDB.stores.documents,d);}}updateEmailPreview();}); $('emailRecipients').addEventListener('change',(e)=>{if(e.target.matches('.email-select')){const id=e.target.dataset.emailId;e.target.checked?state.selectedEmailIds.add(id):state.selectedEmailIds.delete(id);}updateEmailPreview();}); $('emailSubject').addEventListener('input',updateEmailPreview); $('emailBody').addEventListener('input',updateEmailPreview); $('emailCommonTo').addEventListener('input',updateEmailPreview); $('btnSelectAllEmail').addEventListener('click',()=>{const allSelected=state.outputs.length&&state.selectedEmailIds.size===state.outputs.length;state.selectedEmailIds=allSelected?new Set():new Set(state.outputs.map((o)=>o.id));renderEmail();}); qsa('[data-email-mode]').forEach((b)=>b.addEventListener('click',async()=>{state.emailMode=b.dataset.emailMode;await SSTDB.setSetting('emailMode',state.emailMode);renderEmail();})); qsa('[data-email-format]').forEach((b)=>b.addEventListener('click',async()=>{state.emailFormat=b.dataset.emailFormat;await SSTDB.setSetting('emailAttachmentFormat',state.emailFormat);renderEmail();})); $('btnSendEmails').addEventListener('click',sendEmails);
     qsa('[data-control-tab]').forEach((b)=>b.addEventListener('click',()=>{state.controlTab=b.dataset.controlTab;qsa('[data-control-tab]').forEach((x)=>x.classList.toggle('active',x===b));renderControlTable();}));
-    $('btnSettingsTestBackend').addEventListener('click',()=>saveBackendUrl('settingsBackendUrl')); $('btnBackendWriteProbe')?.addEventListener('click',testBackendWrite); $('btnSettingsSaveBackend').addEventListener('click',async()=>{if(await saveBackendUrl('settingsBackendUrl'))await showAuthIfNeeded();}); $('btnSaveAi').addEventListener('click',saveAiSettings); $('btnTestAi')?.addEventListener('click',async()=>{const ready=await ensureAiReady({notify:true});if(ready){toast('IA lista','Gemini está autorizado. Se validarán automáticamente los PDF pendientes.','success');await autoAuditPendingDocuments();}}); $('btnRefreshConsecutive').addEventListener('click',refreshBackendDiagnostics); $('btnSaveConsecutive').addEventListener('click',saveConsecutiveSettings);
+    $('btnSettingsTestBackend').addEventListener('click',()=>saveBackendUrl('settingsBackendUrl')); $('btnBackendWriteProbe')?.addEventListener('click',testBackendWrite); $('btnSettingsSaveBackend').addEventListener('click',async()=>{if(await saveBackendUrl('settingsBackendUrl'))await showAuthIfNeeded();}); $('btnSaveAi').addEventListener('click',saveAiSettings); $('btnTestAi')?.addEventListener('click',async()=>{
+      const ready=await ensureAiReady({notify:true});
+      if(!ready)return;
+      try{
+        const probe=await SSTBackend.call('aiProbe',{model:await SSTDB.getSetting('geminiModel',APP_CONFIG.defaultGeminiModel)},{timeout:45000});
+        if(!probe?.ok)throw new Error(probe?.detail||'La prueba real de Gemini falló.');
+        toast('IA operativa',`Generación real correcta con ${probe.model}. Ahora se reintentarán los PDF pendientes.`,'success',7000);
+        await autoAuditPendingDocuments();
+      }catch(error){toast('IA no operativa',friendlyAiError(error),'error',10000);}
+    }); $('btnRefreshConsecutive').addEventListener('click',refreshBackendDiagnostics); $('btnSaveConsecutive').addEventListener('click',saveConsecutiveSettings);
     $('btnUploadTemplate').addEventListener('click',()=>$('templateInput').click()); $('templateInput').addEventListener('change',async(e)=>{try{await uploadAsset('template',e.target.files[0]);}catch(error){toast('Plantilla no válida',error.message,'error',8500);}finally{e.target.value='';}}); $('btnRemoveTemplate').addEventListener('click',async()=>{await SSTDB.delete(SSTDB.stores.assets,'template');if(state.backendOnline&&!state.localMode&&state.user?.role==='admin'){try{await SSTBackend.call('removeSharedAsset',{kind:'template'});}catch(e){toast('Plantilla local eliminada',e.message,'warn');}}await invalidateGeneratedOutputs('Se restauró la plantilla base');await renderAssetSettings();toast('Plantilla restaurada','Se utilizará la plantilla base incluida en todas las nuevas vistas previas.','success');});
     $('btnUploadSignature').addEventListener('click',()=>$('signatureInput').click()); $('signatureInput').addEventListener('change',async(e)=>{try{await uploadAsset('signature',e.target.files[0]);}catch(error){toast('No se pudo guardar la firma',error.message,'error');}finally{e.target.value='';}}); $('btnRemoveSignature').addEventListener('click',async()=>{await SSTDB.delete(SSTDB.stores.assets,'signature');if(state.backendOnline&&!state.localMode&&state.user?.role==='admin'){try{await SSTBackend.call('removeSharedAsset',{kind:'signature'});}catch(e){toast('Firma local eliminada',e.message,'warn');}}await renderAssetSettings();toast('Firma eliminada','','success');});
     $('btnSavePreferences').addEventListener('click',async()=>{await SSTDB.setSetting('outputFormat',$('settingsOutputFormat').value);await SSTDB.setSetting('ocrEnabled',$('toggleOcr').checked);toast('Preferencias guardadas','Se aplicarán a las próximas cargas y generaciones.','success');renderDashboard();});
