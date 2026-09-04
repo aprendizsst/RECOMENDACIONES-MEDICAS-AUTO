@@ -16,7 +16,7 @@
         let result;
         const payload = {
           name: data.nombre, identification: data.identificacion, role: data.cargo, exam: data.tipo_examen, date: data.fecha,
-          sourceFile: documentRow.fileName || '', documentKey: documentRow.hash || documentRow.id || ''
+          sourceFile: documentRow.fileName || '', documentKey: documentRow.hash || documentRow.id || '', data:SSTUtils.deepClone(data || {})
         };
         try { result = await SSTBackend.call('nextConsecutive', payload, { timeout: 120000 }); }
         catch (error) {
@@ -28,6 +28,10 @@
         if (!result?.consecutive) throw new Error('Google Sheets no devolvió un consecutivo válido.');
         data.consecutivo = result.consecutive;
         data.consecutivo_fuente = result.source || 'Google Sheets';
+        await SSTBackend.call('syncConsecutiveRecord', {
+          documentKey:documentRow.hash || documentRow.id || '', fileName:documentRow.fileName || '', consecutive:data.consecutivo,
+          aiValidationStatus:String(documentRow.aiValidationStatus || ''), syncState:'SINCRONIZADO', data:SSTUtils.deepClone(data || {})
+        }, { timeout:90000 });
         return data.consecutivo;
       }
       let current = Number(await SSTDB.getSetting('localSequence', 0)) || 0;
@@ -292,10 +296,11 @@
       const items = pending.map((d) => ({
         name:d.data?.nombre || '', identification:d.data?.identificacion || '', role:d.data?.cargo || '',
         exam:d.data?.tipo_examen || '', date:d.data?.fecha || '', sourceFile:d.fileName || '',
-        documentKey:d.hash || d.id || ''
+        documentKey:d.hash || d.id || '', data:SSTUtils.deepClone(d.data || {})
       }));
       const response = await SSTBackend.call('reserveConsecutives', { items }, { timeout: 150000 });
       const byKey = new Map((response?.items || []).map((x) => [String(x.documentKey || ''), x]));
+      const syncItems=[];
       for (const doc of pending) {
         const key = String(doc.hash || doc.id || '');
         const hit = byKey.get(key);
@@ -303,8 +308,10 @@
         doc.data.consecutivo = hit.consecutive;
         doc.data.consecutivo_fuente = hit.source || 'Google Sheets';
         doc.updatedAt = new Date().toISOString();
+        syncItems.push({documentKey:key,fileName:doc.fileName || '',consecutive:hit.consecutive,aiValidationStatus:String(doc.aiValidationStatus || ''),syncState:'SINCRONIZADO',data:SSTUtils.deepClone(doc.data || {})});
         await SSTDB.put(SSTDB.stores.documents, doc);
       }
+      if (syncItems.length) await SSTBackend.call('syncConsecutiveRecords',{items:syncItems},{timeout:120000});
     }
 
     async generateAll(documents, formatOverride = null, onProgress = () => {}) {

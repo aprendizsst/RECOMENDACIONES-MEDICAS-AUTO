@@ -82,6 +82,8 @@
       saved += Number(response?.saved || 0);
       inserted += Number(response?.inserted || 0);
       updated += Number(response?.updated || 0);
+      const externalErrors = response?.consecutiveSheetSync?.errors || [];
+      if (externalErrors.length) throw new Error(`La base interna se guardó, pero la hoja de consecutivos no pudo completarse: ${externalErrors.join(' | ')}`);
     }
     const stamp = new Date().toISOString();
     for (const doc of docs) {
@@ -99,7 +101,8 @@
       const result = await SSTBackend.call('backendDiagnostics', { writeProbe:true }, { timeout:60000 });
       state.backendInfo = Object.assign({}, state.backendInfo || {}, { backendVersion:result.backendVersion, capabilities:result.capabilities || [] });
       const db = result.portalDatabase || {};
-      if ($('backendDiagnosticsDetail')) $('backendDiagnosticsDetail').textContent = `Escritura OK · ${result.backendVersion || 'sin versión'} · ${db.name || 'Base Portal'} / ${db.documentSheet || 'DocumentosProcesados'} · ${db.documentRows ?? 0} certificado(s) sincronizado(s).`;
+      const ext = result.consecutiveData || {};
+      if ($('backendDiagnosticsDetail')) $('backendDiagnosticsDetail').textContent = `Escritura OK · ${result.backendVersion || 'sin versión'} · Consecutivos: ${ext.ok ? `${ext.spreadsheetName} / ${ext.sheetName}` : (ext.error || 'sin configurar')} · Registro SST: ${ext?.sstLog ? `${ext.sstLog.spreadsheetName} / ${ext.sstLog.sheetName}` : 'CORRESPONDENCIA ENVIADA SST 2026 / Hoja 1'} · Base técnica: ${db.name || 'Base Portal'} / ${db.documentSheet || 'DocumentosProcesados'} (${db.documentRows ?? 0}).`;
       $('settingsBackendStatus').textContent = 'Escritura OK';
       $('settingsBackendStatus').className = 'status-badge success';
       toast('Apps Script y Sheets listos', `Prueba de escritura registrada en ${result.writeProbe?.sheet || 'DiagnosticoBackend'}.`, 'success', 7000);
@@ -344,7 +347,7 @@
       $('settingsBackendStatus').className = `status-badge ${compatible ? 'success' : 'warn'}`;
       if ($('backendDiagnosticsDetail')) $('backendDiagnosticsDetail').textContent = `${backendVersionLabel()} · ${db.name || 'Base Portal'} / ${db.documentSheet || 'DocumentosProcesados'} · ${db.documentRows ?? 0} certificado(s) guardado(s).${compatible ? '' : ' Debes reemplazar Code.gs y publicar una nueva versión de la Web App.'}`;
     } catch (error) {
-      if ($('backendDiagnosticsDetail')) $('backendDiagnosticsDetail').textContent = `El backend responde, pero no expone el diagnóstico V10.6: ${error.message}. Actualiza Code.gs y vuelve a implementar la Web App.`;
+      if ($('backendDiagnosticsDetail')) $('backendDiagnosticsDetail').textContent = `El backend responde, pero no expone el diagnóstico V10.8: ${error.message}. Actualiza Code.gs y vuelve a implementar la Web App.`;
       $('settingsBackendStatus').textContent = 'Backend desactualizado';
       $('settingsBackendStatus').className = 'status-badge warn';
     }
@@ -380,8 +383,8 @@
       $('consecutiveStatusBadge').textContent = `Actual ${status.currentDisplay ?? status.current ?? 0}`;
       const statusIssues = (status.duplicateConsecutives || []).length + (status.conflictingDocumentKeys || []).length;
       $('consecutiveStatusBadge').className = `status-badge ${statusIssues ? 'warn' : 'success'}`;
-      $('consecutiveStatusDetail').textContent = `${status.spreadsheetName} · ${status.sheetName} · ${status.rowsRead ?? 0} consecutivo(s) válidos · actual: ${status.currentDisplay ?? status.current ?? 0} · siguiente: ${status.nextDisplay ?? status.next} · control: ${status.controlSpreadsheetName || 'Base Portal'} / ${status.controlSheet || 'ConsecutivosControl'} (${status.controlRows ?? 0} registros)${statusIssues ? ` · ALERTA: ${statusIssues} inconsistencia(s) detectada(s)` : ' · integridad OK'}`;
-      $('settingsConsecutiveSheet').value = status.sheetName || 'Consecutivos';
+      $('consecutiveStatusDetail').textContent = `${status.spreadsheetName} / ${status.sheetName} · ${status.rowsRead ?? 0} consecutivo(s) válidos · actual: ${status.currentDisplay ?? status.current ?? 0} · siguiente: ${status.nextDisplay ?? status.next} · registro SST: ${status.sstLog?.spreadsheetName || 'CORRESPONDENCIA ENVIADA SST 2026'} / ${status.sstLog?.sheetName || 'Hoja 1'}${status.sstLog?.ok===false ? ` · ERROR: ${status.sstLog.error}` : ''}${statusIssues ? ` · ALERTA: ${statusIssues} inconsistencia(s) detectada(s)` : ' · integridad OK'}`;
+      $('settingsConsecutiveSheet').value = status.sheetName || 'CONSECUTIVOS 2026';
       $('settingsConsecutivePrefix').value = status.prefix || 'SST';
       if (status.configured && status.spreadsheetId && !$('settingsConsecutiveSpreadsheet').value) {
         $('settingsConsecutiveSpreadsheet').value = `https://docs.google.com/spreadsheets/d/${status.spreadsheetId}/edit`;
@@ -399,13 +402,13 @@
     try {
       const result = await SSTBackend.call('saveConsecutiveConfig', {
         spreadsheetUrlOrId: $('settingsConsecutiveSpreadsheet').value.trim(),
-        sheetName: $('settingsConsecutiveSheet').value.trim() || 'Consecutivos',
+        sheetName: $('settingsConsecutiveSheet').value.trim() || 'CONSECUTIVOS 2026',
         prefix: $('settingsConsecutivePrefix').value.trim() || 'SST'
       }, { timeout: 60000 });
       $('consecutiveStatusBadge').textContent = `Actual ${result.currentDisplay ?? result.current ?? 0}`;
       const resultIssues = (result.duplicateConsecutives || []).length + (result.conflictingDocumentKeys || []).length;
       $('consecutiveStatusBadge').className = `status-badge ${resultIssues ? 'warn' : 'success'}`;
-      $('consecutiveStatusDetail').textContent = `${result.spreadsheetName} · ${result.sheetName} · ${result.rowsRead ?? 0} consecutivo(s) válidos · actual: ${result.currentDisplay ?? result.current ?? 0} · siguiente: ${result.nextDisplay ?? result.next} · control: ${result.controlSpreadsheetName || 'Base Portal'} / ${result.controlSheet || 'ConsecutivosControl'} (${result.controlRows ?? 0} registros)${resultIssues ? ` · ALERTA: ${resultIssues} inconsistencia(s)` : ' · integridad OK'}`;
+      $('consecutiveStatusDetail').textContent = `${result.spreadsheetName} / ${result.sheetName} · ${result.rowsRead ?? 0} consecutivo(s) válidos · actual: ${result.currentDisplay ?? result.current ?? 0} · siguiente: ${result.nextDisplay ?? result.next} · registro SST: ${result.sstLog?.spreadsheetName || 'CORRESPONDENCIA ENVIADA SST 2026'} / ${result.sstLog?.sheetName || 'Hoja 1'}${result.sstLog?.ok===false ? ` · ERROR: ${result.sstLog.error}` : ''}${resultIssues ? ` · ALERTA: ${resultIssues} inconsistencia(s)` : ' · integridad OK'}`;
       toast('Consecutivos conectados', `Se validará contra ${result.spreadsheetName} / ${result.sheetName}.`, 'success', 6500);
     } catch (error) { toast('No se pudo validar la hoja', error.message, 'error', 8000); }
   }
@@ -1331,6 +1334,22 @@
     return out;
   }
 
+  function correspondenceRecord(doc, recipient, formats, attachments = []) {
+    return {
+      documentKey:String(doc?.hash || doc?.id || ''),
+      consecutive:String(doc?.data?.consecutivo || ''),
+      worker:String(doc?.data?.nombre || ''),
+      identification:String(doc?.data?.identificacion || ''),
+      date:String(doc?.data?.fecha || ''),
+      role:String(doc?.data?.cargo || ''),
+      exam:String(doc?.data?.tipo_examen || ''),
+      sourceFile:String(doc?.fileName || ''),
+      recipient:String(recipient || ''),
+      formats:Array.isArray(formats) ? formats : [String(formats || '')].filter(Boolean),
+      attachments:Array.isArray(attachments) ? attachments : []
+    };
+  }
+
   async function sendEmails() {
     if (!state.backendOnline || state.localMode) return toast('Backend requerido', 'Configura Google Apps Script para enviar correos.', 'warn');
     if (!backendVersionCompatible()) return toast('Apps Script desactualizado', `${backendVersionLabel()}. Actualiza Code.gs antes de usar el nuevo módulo de correo.`, 'error', 9000);
@@ -1358,8 +1377,10 @@
             const list = await serializeAttachments(groups[i]);
             const subjectBase=applyEmailTemplate(subjectTpl,ctx);
             const subject=groups.length>1 ? `${subjectBase} · paquete ${i+1}/${groups.length}` : subjectBase;
-            const response=await SSTBackend.call('sendEmail',{to:commonTo,cc,bcc,subject,body:applyEmailTemplate(bodyTpl,ctx),attachments:list,sourceFile:items.map((x)=>x.doc.fileName).join(' | '),personName:items.length===1?(items[0].doc.data?.nombre||''):`${items.length} documentos seleccionados`},{timeout:150000});
-            ok++; if (response?.history) state.emailHistory.unshift(response.history);
+            const groupDocs=[...new Map(groups[i].map((a)=>[a.doc.id,a.doc])).values()];
+            const records=groupDocs.map((doc)=>correspondenceRecord(doc,commonTo,[...new Set(groups[i].filter((a)=>a.doc.id===doc.id).map((a)=>a.output.format))],groups[i].filter((a)=>a.doc.id===doc.id).map((a)=>a.output.filename)));
+            const response=await SSTBackend.call('sendEmail',{to:commonTo,cc,bcc,subject,body:applyEmailTemplate(bodyTpl,ctx),attachments:list,formats:formats.join(' + '),records,sourceFile:groupDocs.map((d)=>d.fileName).join(' | '),personName:groupDocs.length===1?(groupDocs[0].data?.nombre||''):`${groupDocs.length} documentos seleccionados`},{timeout:150000});
+            ok++; if (response?.history) state.emailHistory.unshift(response.history); if (response?.correspondence?.ok===false) errors.push(`Paquete ${i+1}: correo enviado, pero no se actualizó CORRESPONDENCIA ENVIADA SST 2026 / Hoja 1: ${response.correspondence.error}`);
           } catch (error) { errors.push(`Paquete ${i+1}: ${error.message}`); }
         }
       } else {
@@ -1369,8 +1390,9 @@
           const {doc,to}=items[i]; $('btnSendEmails').textContent=`Enviando ${i+1} de ${items.length}…`;
           try {
             const list=await serializeAttachments(byDoc.get(doc.id) || []);
-            const response=await SSTBackend.call('sendEmail',{to,cc,bcc,subject:applyEmailTemplate(subjectTpl,doc.data),body:applyEmailTemplate(bodyTpl,doc.data),attachments:list,sourceFile:doc.fileName,personName:doc.data?.nombre || ''},{timeout:120000});
-            ok++; if (response?.history) state.emailHistory.unshift(response.history);
+            const records=[correspondenceRecord(doc,to,formats,list.map((a)=>a.filename))];
+            const response=await SSTBackend.call('sendEmail',{to,cc,bcc,subject:applyEmailTemplate(subjectTpl,doc.data),body:applyEmailTemplate(bodyTpl,doc.data),attachments:list,formats:formats.join(' + '),records,sourceFile:doc.fileName,personName:doc.data?.nombre || ''},{timeout:120000});
+            ok++; if (response?.history) state.emailHistory.unshift(response.history); if (response?.correspondence?.ok===false) errors.push(`${doc.data?.nombre || doc.fileName}: correo enviado, pero no se actualizó CORRESPONDENCIA ENVIADA SST 2026 / Hoja 1: ${response.correspondence.error}`);
           } catch (error) { errors.push(`${doc.data?.nombre || doc.fileName}: ${error.message}`); }
         }
       }
@@ -1455,7 +1477,7 @@
       state.backendInfo=await SSTBackend.ping(); setBackendUi(true);
       if (!backendVersionCompatible()) {
         $('settingsBackendStatus').textContent='Actualizar Apps Script'; $('settingsBackendStatus').className='status-badge warn';
-        if ($('backendDiagnosticsDetail')) $('backendDiagnosticsDetail').textContent = `${backendVersionLabel()}. El frontend puede conectar, pero la sincronización de certificados no funcionará hasta publicar la V10.6 del backend.`;
+        if ($('backendDiagnosticsDetail')) $('backendDiagnosticsDetail').textContent = `${backendVersionLabel()}. El frontend puede conectar, pero la sincronización de certificados no funcionará hasta publicar la V10.8 del backend.`;
         toast('Backend conectado pero desactualizado', backendVersionLabel(), 'warn', 9000);
       } else toast('Backend conectado',`${state.backendInfo.message||'Google Apps Script está listo.'} · ${state.backendInfo.backendVersion}`,'success');
       return true;

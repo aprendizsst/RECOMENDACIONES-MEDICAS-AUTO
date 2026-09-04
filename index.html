@@ -8,9 +8,9 @@
   <title>Portal SST · Recomendaciones Médicas</title>
   <link rel="preconnect" href="https://cdnjs.cloudflare.com" />
   <link rel="preconnect" href="https://cdn.jsdelivr.net" />
-  <link rel="icon" href="assets/icon.svg" type="image/svg+xml" />
-  <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="stylesheet" href="css/styles.css" />
+  <link rel="icon" href="./assets/icon.svg?v=20260904-1010" type="image/svg+xml" />
+  <link rel="manifest" href="./manifest.webmanifest?v=20260904-1010" />
+  <link rel="stylesheet" href="./styles.css?v=20260904-1010" />
 </head>
 <body>
   <div id="appBoot" class="boot-screen">
@@ -327,9 +327,9 @@
         <section class="view-section" data-view-panel="settings">
           <div class="toolbar-row"><div><span class="eyebrow">CONFIGURACIÓN</span><h2>Configuración</h2><p>Los archivos locales se guardan en IndexedDB; las credenciales sensibles permanecen en Apps Script.</p></div></div>
           <div class="settings-grid">
-            <section class="panel"><div class="panel-head"><div><span class="eyebrow">SERVICIO SEGURO</span><h3>Google Apps Script</h3></div><span id="settingsBackendStatus" class="status-badge">Sin conexión</span></div><label><span>URL de la Web App</span><input id="settingsBackendUrl" type="url" /></label><div class="button-row"><button id="btnSettingsTestBackend" class="btn secondary">Probar conexión</button><button id="btnBackendWriteProbe" class="btn secondary">Probar escritura en Sheets</button><button id="btnSettingsSaveBackend" class="btn primary">Guardar</button></div><p id="backendDiagnosticsDetail" class="help-text">La V10.6 verifica la versión desplegada de Apps Script, registra los certificados procesados y habilita correo con múltiples adjuntos en la hoja <code>DocumentosProcesados</code>.</p><p class="help-text">Usa la URL terminada en <code>/exec</code>. Si Apps Script fue modificado, debes crear una nueva versión de la implementación para que GitHub Pages use ese código.</p></section>
+            <section class="panel"><div class="panel-head"><div><span class="eyebrow">SERVICIO SEGURO</span><h3>Google Apps Script</h3></div><span id="settingsBackendStatus" class="status-badge">Sin conexión</span></div><label><span>URL de la Web App</span><input id="settingsBackendUrl" type="url" /></label><div class="button-row"><button id="btnSettingsTestBackend" class="btn secondary">Probar conexión</button><button id="btnBackendWriteProbe" class="btn secondary">Probar escritura en Sheets</button><button id="btnSettingsSaveBackend" class="btn primary">Guardar</button></div><p id="backendDiagnosticsDetail" class="help-text">La V10.9 separa los dos archivos reales: CORRESPONDENCIA ENVIADA (1) / CONSECUTIVOS 2026 valida y reserva consecutivos; CORRESPONDENCIA ENVIADA SST 2026 / Hoja 1 recibe el registro SST.</p><p class="help-text">Usa la URL terminada en <code>/exec</code>. Si Apps Script fue modificado, debes crear una nueva versión de la implementación para que GitHub Pages use ese código.</p></section>
 
-            <section class="panel"><div class="panel-head"><div><span class="eyebrow">CONSECUTIVOS</span><h3>Google Sheets</h3></div><span id="consecutiveStatusBadge" class="status-badge">Consultando</span></div><label><span>URL o ID de la hoja de cálculo</span><input id="settingsConsecutiveSpreadsheet" placeholder="https://docs.google.com/spreadsheets/d/.../edit" /></label><label><span>Nombre de la pestaña</span><input id="settingsConsecutiveSheet" value="Consecutivos" /></label><label><span>Prefijo</span><input id="settingsConsecutivePrefix" value="SST" maxlength="16" /></label><div class="button-row"><button id="btnRefreshConsecutive" class="btn secondary">Consultar actual</button><button id="btnSaveConsecutive" class="btn primary">Guardar y validar</button></div><p id="consecutiveStatusDetail" class="help-text">El backend lee el mayor consecutivo directamente desde Sheets y usa bloqueo para evitar duplicados.</p></section>
+            <section class="panel"><div class="panel-head"><div><span class="eyebrow">CONSECUTIVOS</span><h3>Google Sheets</h3></div><span id="consecutiveStatusBadge" class="status-badge">Consultando</span></div><label><span>Archivo CORRESPONDENCIA ENVIADA (1): URL o ID (opcional)</span><input id="settingsConsecutiveSpreadsheet" placeholder="Déjalo vacío para localizarlo por nombre exacto" /></label><label><span>Pestaña de consecutivos</span><input id="settingsConsecutiveSheet" value="CONSECUTIVOS 2026" readonly /></label><label><span>Prefijo</span><input id="settingsConsecutivePrefix" value="SST" maxlength="16" /></label><div class="button-row"><button id="btnRefreshConsecutive" class="btn secondary">Consultar actual</button><button id="btnSaveConsecutive" class="btn primary">Guardar y validar</button></div><p id="consecutiveStatusDetail" class="help-text">CONSECUTIVOS 2026 conserva: CONSECUTIVO · FECHA · NOMBRE · RECOMENDACIÓN MEDICA. El archivo CORRESPONDENCIA ENVIADA SST 2026 / Hoja 1 conserva: CONSECUTIVO · FECHA · NOMBRE · CARGO · EXAMEN.</p></section>
 
             <section class="panel"><div class="panel-head"><div><span class="eyebrow">INTELIGENCIA ARTIFICIAL</span><h3>Gemini</h3></div><span id="aiStatusBadge" class="status-badge warn">Comprobando</span></div><label class="switch-row"><div><strong>Validación visual automática</strong><small>Obligatoria: cada PDF se audita con Gemini al cargarlo. La generación se bloquea si la IA no terminó correctamente.</small></div><input id="toggleAi" type="checkbox" checked disabled /></label><p id="aiStatusDetail" class="help-text">Comprobando autorización y modelo…</p><label><span>Modelo</span><input id="settingsGeminiModel" /></label><label><span>API key de Gemini</span><input id="settingsGeminiKey" type="password" placeholder="Déjala vacía para conservar la guardada" /></label><div class="button-row"><button id="btnTestAi" class="btn secondary">Probar IA y validar pendientes</button><button id="btnSaveAi" class="btn primary">Guardar configuración</button></div></section>
 
@@ -355,15 +355,15 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script src="https://cdn.jsdelivr.net/pyodide/v0.27.7/full/pyodide.js"></script>
-  <script src="js/config.js?v=20260903-106"></script>
-  <script src="js/utils.js?v=20260903-106"></script>
-  <script src="js/db.js?v=20260903-106"></script>
-  <script src="js/backend.js?v=20260903-106"></script>
-  <script src="js/profile-engine.js?v=20260903-106"></script>
-  <script src="js/parser-bridge.js?v=20260903-106"></script>
-  <script src="js/pdf-service.js?v=20260903-106"></script>
-  <script src="js/docx-engine.js?v=20260903-106"></script>
-  <script src="js/generator.js?v=20260903-106"></script>
-  <script src="js/app.js?v=20260903-106"></script>
+  <script src="./config.js?v=20260904-1010"></script>
+  <script src="./utils.js?v=20260904-1010"></script>
+  <script src="./db.js?v=20260904-1010"></script>
+  <script src="./backend.js?v=20260904-1010"></script>
+  <script src="./profile-engine.js?v=20260904-1010"></script>
+  <script src="./parser-bridge.js?v=20260904-1010"></script>
+  <script src="./pdf-service.js?v=20260904-1010"></script>
+  <script src="./docx-engine.js?v=20260904-1010"></script>
+  <script src="./generator.js?v=20260904-1010"></script>
+  <script src="./app.js?v=20260904-1010"></script>
 </body>
 </html>
