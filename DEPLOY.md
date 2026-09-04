@@ -1,22 +1,22 @@
-# Despliegue V10.10
+# Despliegue V10.11
 
 ## GitHub Pages
-1. Sube el contenido de esta carpeta a la raíz del repositorio.
+1. Sube **el contenido** de esta carpeta a la raíz del repositorio.
 2. Conserva `.github/workflows/deploy.yml`.
-3. En GitHub: Settings → Pages → Source: **GitHub Actions**.
+3. En GitHub: **Settings → Pages → Source: GitHub Actions**.
 4. Haz commit a `main`.
-5. Abre Actions y confirma que `Desplegar Recomendaciones Médicas` finalice en verde.
+5. En **Actions**, confirma que `Desplegar Recomendaciones Médicas` finalice en verde.
 6. Recarga la web con `Ctrl + F5`.
 
-La acción publica un `dist/` que contiene únicamente los archivos necesarios. Ya no ejecuta `npm run build`, Vite, React ni Firebase.
+La acción publica únicamente los archivos necesarios y valida que los JavaScript esenciales existan antes de desplegar.
 
 ## Google Apps Script
-El backend incluido corresponde a `2026.09.04-v10.9-two-sheet-routing`.
-Solo debes volver a desplegar Apps Script si tu Web App todavía tiene una versión anterior.
+El backend incluido sigue siendo `2026.09.04-v10.9-two-sheet-routing`.
+Si tu Web App ya muestra exactamente esa versión, **no necesitas volver a desplegar Apps Script por el cambio visual V10.11**.
 
-Archivos a copiar en Apps Script:
+Si tu backend es anterior, copia en Apps Script:
 - `backend/Code.gs`
 - `backend/BackendBridge.html`
 - `backend/appsscript.json`
 
-Después: Implementar → Administrar implementaciones → Editar → Nueva versión → Implementar.
+Después: **Implementar → Administrar implementaciones → Editar → Nueva versión → Implementar**.
