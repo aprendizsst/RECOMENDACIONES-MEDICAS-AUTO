@@ -6,7 +6,7 @@
     selectedOriginalId: null, originalPage: 1, selectedOutputId: null,
     user: null, localMode: false, backendOnline: false, backendInfo: null,
     controlTab: 'validation', lastCacheStats: { generated: 0, reused: 0 },
-    parserReady: false, authBootstrap: null, selectedBatchIds: new Set(), selectedEmailIds: new Set(), emailMode: 'individual', emailFormat: 'PDF', aiStatus: null, aiRecoveryScheduled: false, aiRecoveryPasses: 0
+    parserReady: false, authBootstrap: null, selectedBatchIds: new Set(), selectedEmailIds: new Set(), emailMode: 'individual', emailFormat: 'PDF', emailZoneFilter: 'ALL', emailZoneRecipients: {}, aiStatus: null, aiRecoveryScheduled: false, aiRecoveryPasses: 0
   };
 
   let originalRenderSequence = 0;
@@ -127,6 +127,9 @@
       $('emailBody').value = await SSTDB.getSetting('emailBody', APP_CONFIG.emailBody);
       state.emailMode = await SSTDB.getSetting('emailMode', 'individual');
       state.emailFormat = await SSTDB.getSetting('emailAttachmentFormat', 'PDF');
+      state.emailZoneFilter = await SSTDB.getSetting('emailZoneFilter', 'ALL');
+      state.emailZoneRecipients = await SSTDB.getSetting('emailZoneRecipients', {});
+      if (!state.emailZoneRecipients || typeof state.emailZoneRecipients !== 'object' || Array.isArray(state.emailZoneRecipients)) state.emailZoneRecipients = {};
       $('emailCommonTo').value = await SSTDB.getSetting('emailCommonTo', '');
       $('toggleAi').checked = true; $('toggleAi').disabled = true; await SSTDB.setSetting('aiEnabled', true);
       $('toggleOcr').checked = await SSTDB.getSetting('ocrEnabled', true);
@@ -208,6 +211,21 @@
 
   async function loadState() {
     state.documents = (await SSTDB.getAll(SSTDB.stores.documents)).sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+    // V10.16: migra documentos previos sin reprocesar el PDF. El tipo de examen se
+    // normaliza a una familia válida y la zona se deriva automáticamente del lugar.
+    for (const doc of state.documents) {
+      if (!doc?.data) continue;
+      const profileId = doc.data?.perfil_detectado?.id || '';
+      const canonicalType = SSTProfiles.detectExamType(doc.text || '', profileId, doc.data.tipo_examen || '');
+      const zone = SSTProfiles.zoneFromPlace(doc.data.lugar || '');
+      let changed = false;
+      if (canonicalType && canonicalType !== doc.data.tipo_examen) { doc.data.tipo_examen_original ||= doc.data.tipo_examen || ''; doc.data.tipo_examen = canonicalType; changed = true; }
+      if (zone !== String(doc.data.zona || '').trim()) { doc.data.zona = zone; changed = true; }
+      if (!canonicalType && !(doc.data.campos_revision || []).some((x)=>String(x).toLowerCase().includes('tipo de examen'))) {
+        doc.data.campos_revision = [...(doc.data.campos_revision || []), 'tipo de examen']; changed = true;
+      }
+      if (changed) { doc.updatedAt = new Date().toISOString(); doc.dirty = true; await SSTDB.put(SSTDB.stores.documents, doc); }
+    }
     state.outputs = (await SSTDB.getAll(SSTDB.stores.outputs)).sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
     state.emailHistory = (await SSTDB.getAll(SSTDB.stores.emailHistory)).sort((a,b) => String(b.createdAt).localeCompare(String(a.createdAt)));
     if (state.backendOnline && !state.localMode) {
@@ -482,7 +500,7 @@
   }
 
   function documentMatches(d, query) {
-    const text = `${d.fileName} ${d.data?.nombre || ''} ${d.data?.identificacion || ''} ${d.data?.cargo || ''}`.toLowerCase();
+    const text = `${d.fileName} ${d.data?.nombre || ''} ${d.data?.identificacion || ''} ${d.data?.cargo || ''} ${d.data?.zona || ''} ${d.data?.lugar || ''}`.toLowerCase();
     return text.includes(String(query || '').trim().toLowerCase());
   }
 
@@ -514,7 +532,7 @@
     $('docListCount').textContent = state.documents.length;
     $('documentList').innerHTML = docs.length ? docs.map((d) => {
       const aiState = d.aiValidationStatus === 'validated' ? 'IA validada' : (d.aiValidationStatus === 'retryable_error' ? 'IA en reintento' : (d.aiValidationStatus === 'pending_auth' ? 'IA pendiente de autorización' : (d.aiValidationStatus === 'error' ? 'IA con error' : 'IA pendiente')));
-      return `<div class="document-item ${d.id === state.selectedDocId ? 'active' : ''}" data-doc-id="${d.id}"><label class="batch-check" title="Incluir en vista previa/lote"><input type="checkbox" class="batch-select" data-batch-id="${d.id}" ${state.selectedBatchIds.has(d.id) ? 'checked' : ''}><span></span></label><div class="doc-icon">PDF</div><div class="doc-main"><strong>${SSTUtils.escapeHtml(d.data?.nombre || 'Sin nombre')}</strong><small>${SSTUtils.escapeHtml(d.fileName)}</small><em>${d.dirty ? 'Editado · requiere actualizar salida' : `${aiState} · ${d.data?.perfil_documental || 'Formato detectado'} · ${Number(d.data?.confianza_formato || 0)}% · ${(d.data?.restricciones_lista || []).length} restr.`}</em></div><span class="mini-status ${d.aiValidationStatus === 'validated' ? 'ai' : (d.dirty ? 'warn' : '')}"></span><button class="item-delete" type="button" data-delete-doc="${d.id}" title="Eliminar este archivo" aria-label="Eliminar ${SSTUtils.escapeHtml(d.fileName)}">×</button></div>`;
+      return `<div class="document-item ${d.id === state.selectedDocId ? 'active' : ''}" data-doc-id="${d.id}"><label class="batch-check" title="Incluir en vista previa/lote"><input type="checkbox" class="batch-select" data-batch-id="${d.id}" ${state.selectedBatchIds.has(d.id) ? 'checked' : ''}><span></span></label><div class="doc-icon">PDF</div><div class="doc-main"><strong>${SSTUtils.escapeHtml(d.data?.nombre || 'Sin nombre')}</strong><small>${SSTUtils.escapeHtml(d.fileName)}</small><em>${d.dirty ? 'Editado · requiere actualizar salida' : `${aiState} · ${d.data?.zona ? `Zona ${d.data.zona} · ` : ''}${d.data?.perfil_documental || 'Formato detectado'} · ${Number(d.data?.confianza_formato || 0)}% · ${(d.data?.restricciones_lista || []).length} restr.`}</em></div><span class="mini-status ${d.aiValidationStatus === 'validated' ? 'ai' : (d.dirty ? 'warn' : '')}"></span><button class="item-delete" type="button" data-delete-doc="${d.id}" title="Eliminar este archivo" aria-label="Eliminar ${SSTUtils.escapeHtml(d.fileName)}">×</button></div>`;
     }).join('') : '<div class="empty-state compact"><span>▣</span><strong>Sin certificados</strong></div>';
     renderBatchSelectionSummary();
     renderBatchInsights();
@@ -555,7 +573,7 @@
       $('btnValidateAiSelected').classList.toggle('hidden', aiOk);
       $('btnValidateAiSelected').textContent = '↻ Reintentar IA';
     }
-    const values = { fieldName:d.nombre, fieldId:d.identificacion, fieldEmail:d.correo, fieldRole:d.cargo, fieldExamType:d.tipo_examen, fieldDate:d.fecha || SSTUtils.todayIso(), fieldPlace:d.lugar || 'Tunja', fieldSurveillance:d.vigilancia_programa, fieldObservations:d.observaciones, fieldReferrals:d.remisiones };
+    const values = { fieldName:d.nombre, fieldId:d.identificacion, fieldEmail:d.correo, fieldRole:d.cargo, fieldExamType:d.tipo_examen, fieldDate:d.fecha || SSTUtils.todayIso(), fieldPlace:d.lugar || 'Tunja', fieldZone:d.zona || '', fieldSurveillance:d.vigilancia_programa, fieldObservations:d.observaciones, fieldReferrals:d.remisiones };
     for (const [id,value] of Object.entries(values)) $(id).value = value ?? '';
     $('fieldExams').value = (d.examenes_lista || []).join('\n');
     if ($('fieldRestrictions')) {
@@ -609,8 +627,16 @@
   function syncEditorToState() {
     const doc = selectedDocument(); if (!doc) return;
     const d = doc.data;
-    const fieldMap = { fieldName:'nombre',fieldId:'identificacion',fieldEmail:'correo',fieldRole:'cargo',fieldExamType:'tipo_examen',fieldDate:'fecha',fieldPlace:'lugar',fieldSurveillance:'vigilancia_programa',fieldObservations:'observaciones',fieldReferrals:'remisiones' };
+    const fieldMap = { fieldName:'nombre',fieldId:'identificacion',fieldEmail:'correo',fieldRole:'cargo',fieldExamType:'tipo_examen',fieldDate:'fecha',fieldPlace:'lugar',fieldZone:'zona',fieldSurveillance:'vigilancia_programa',fieldObservations:'observaciones',fieldReferrals:'remisiones' };
     for (const [id,key] of Object.entries(fieldMap)) d[key] = $(id).value.trim();
+    const profileId = d?.perfil_detectado?.id || '';
+    const canonicalType = SSTProfiles.canonicalExamType(d.tipo_examen, profileId, doc.text || '');
+    if (canonicalType) d.tipo_examen = canonicalType;
+    if (canonicalType) d.campos_revision = (d.campos_revision || []).filter((x)=>!/^tipo\s+de\s+examen$/i.test(String(x||'').trim()));
+    else if (!(d.campos_revision || []).some((x)=>/^tipo\s+de\s+examen$/i.test(String(x||'').trim()))) d.campos_revision = [...(d.campos_revision || []), 'tipo de examen'];
+    d.zona = SSTProfiles.zoneFromPlace(d.lugar || '');
+    if ($('fieldZone')) $('fieldZone').value = d.zona || '';
+    if ($('fieldExamType') && canonicalType) $('fieldExamType').value = canonicalType;
     d.examenes_lista = $('fieldExams').value.split('\n').map((x) => x.trim()).filter(Boolean);
     if ($('fieldRestrictions')) d.restricciones_lista = $('fieldRestrictions').value.split('\n').map((x) => x.trim()).filter(Boolean).map((line) => {
       const parts = line.split('|');
@@ -633,6 +659,7 @@
     const d = doc?.data || {}; const missing = [];
     if (!String(d.nombre || '').trim()) missing.push('nombre');
     if (!String(d.cargo || '').trim()) missing.push('cargo');
+    if (!SSTProfiles.examTypeCategory(String(d.tipo_examen || ''))) missing.push('tipo de examen válido (Ingreso, Egreso, Seguimiento, Periódico o Post incapacidad)');
     if (!(d.examenes_lista || []).length) missing.push('exámenes realizados');
     const pending = d.recomendaciones_pendientes_revision || [];
     if (pending.length) missing.push('fragmentos pendientes de revisión');
@@ -880,11 +907,14 @@
       out.vigilancia_programa = out.vigilancia_lista.join(', ') || local.vigilancia_programa || 'Ninguno';
     }
     out.evidencias = ai.evidencias || out.evidencias || {};
+    out.tipo_examen = SSTProfiles.canonicalExamType(out.tipo_examen, out?.perfil_detectado?.id || local?.perfil_detectado?.id || '', '') || out.tipo_examen || '';
+    out.zona = SSTProfiles.zoneFromPlace(out.lugar || '');
     out.validado_ia = true;
-    out.modo_validacion = `V10.3 · ${out.perfil_documental || 'formato detectado'} + auditoría visual IA + fusión semántica sin pérdida`;
+    out.modo_validacion = `V10.16 · ${out.perfil_documental || 'formato detectado'} + auditoría visual IA + fusión semántica sin pérdida`;
     const missing = [];
     if (!String(out.nombre || '').trim()) missing.push('nombre');
     if (!String(out.cargo || '').trim()) missing.push('cargo');
+    if (!SSTProfiles.examTypeCategory(String(out.tipo_examen || ''))) missing.push('tipo de examen');
     if (!(out.examenes_lista || []).length) missing.push('exámenes realizados');
     if (!(out.recomendaciones_lista || []).length && !(out.restricciones_lista || []).length) missing.push('recomendaciones/restricciones');
     // Un examen cuya celda derecha dice REALIZADO/NORMAL/NO APLICA es un caso resuelto,
@@ -893,7 +923,10 @@
     const unresolvedCoverage = unresolvedExamCoverage(out);
     const materialDiscrepancy = reviewFlags.some((x)=>String(x).toLowerCase().includes('discrepancia ia material'));
     if(ai.revision_requerida===true && (unresolvedCoverage.length || materialDiscrepancy || missing.length)) reviewFlags.push('auditoría IA solicita revisión');
-    out.campos_revision = [...new Set([...reviewFlags,...missing].filter(Boolean))];
+    const resolvedFlags = SSTProfiles.examTypeCategory(String(out.tipo_examen || ''))
+      ? reviewFlags.filter((x)=>!/^tipo\s+de\s+examen$/i.test(String(x||'').trim()))
+      : reviewFlags;
+    out.campos_revision = [...new Set([...resolvedFlags,...missing].filter(Boolean))];
     out.calidad_extraccion = out.campos_revision.length ? 'Revisar' : 'Alta';
     return out;
   }
@@ -986,6 +1019,8 @@
 
     data.fecha = data.fecha || SSTUtils.todayIso();
     data.lugar = data.lugar || 'Tunja';
+    data.zona = SSTProfiles.zoneFromPlace(data.lugar || '');
+    data.tipo_examen = SSTProfiles.detectExamType(extraction.text || '', data?.perfil_detectado?.id || '', data.tipo_examen || '') || data.tipo_examen || '';
     let aiError = '';
     if (!deferAi && aiEnabled && aiReady && file.size <= APP_CONFIG.maxGeminiPdfMb*1024*1024) {
       try {
@@ -1349,18 +1384,53 @@
     return state.emailFormat === 'Ambos' ? ['PDF','Word'] : [state.emailFormat === 'Word' ? 'Word' : 'PDF'];
   }
 
-  function emailTemplateContext(items = []) {
+  function normalizedZone(value) {
+    return String(value || '').replace(/\s+/g,' ').trim();
+  }
+
+  function documentZone(doc) {
+    const automatic = SSTProfiles.zoneFromPlace(doc?.data?.lugar || '');
+    if (doc?.data && automatic && doc.data.zona !== automatic) doc.data.zona = automatic;
+    return normalizedZone(automatic) || 'Sin zona';
+  }
+
+  function zoneKey(value) {
+    return normalizedZone(value).toLocaleLowerCase('es');
+  }
+
+  function knownEmailZones() {
+    const map = new Map();
+    state.documents.forEach((doc) => {
+      const zone = documentZone(doc);
+      if (zone !== 'Sin zona' && !map.has(zoneKey(zone))) map.set(zoneKey(zone), zone);
+    });
+    Object.keys(state.emailZoneRecipients || {}).forEach((zone) => {
+      const clean = normalizedZone(zone);
+      if (clean && !map.has(zoneKey(clean))) map.set(zoneKey(clean), clean);
+    });
+    return [...map.values()].sort((a,b) => a.localeCompare(b,'es',{sensitivity:'base'}));
+  }
+
+  function zoneRecipient(zone) {
+    const wanted = zoneKey(zone);
+    const entry = Object.entries(state.emailZoneRecipients || {}).find(([key]) => zoneKey(key) === wanted);
+    return String(entry?.[1] || '').trim().toLowerCase();
+  }
+
+  function emailTemplateContext(items = [], explicitZone = '') {
     const names = items.map((x) => x.doc?.data?.nombre || x.output?.personName || x.doc?.fileName || '').filter(Boolean);
-    if (state.emailMode === 'common') {
+    const zone = normalizedZone(explicitZone) || (items.length && new Set(items.map((x)=>documentZone(x.doc))).size === 1 ? documentZone(items[0].doc) : '');
+    if (state.emailMode === 'common' || state.emailMode === 'zone') {
       return {
         nombre: items.length === 1 ? (names[0] || 'el colaborador') : `${items.length} documentos seleccionados`,
         identificacion: items.length === 1 ? String(items[0]?.doc?.data?.identificacion || '') : '',
         cantidad: String(items.length),
         nombres: names.join(', '),
+        zona: zone,
         fecha: SSTUtils.formatDateEs(SSTUtils.todayIso())
       };
     }
-    return items[0]?.doc?.data || {};
+    return Object.assign({}, items[0]?.doc?.data || {}, { zona: documentZone(items[0]?.doc) === 'Sin zona' ? '' : documentZone(items[0]?.doc) });
   }
 
   function applyEmailTemplate(text, data) {
@@ -1368,11 +1438,15 @@
     if (state.emailMode === 'common') {
       if (source === String(APP_CONFIG.emailSubject || '')) source = String(APP_CONFIG.emailBulkSubject || source);
       if (source === String(APP_CONFIG.emailBody || '')) source = String(APP_CONFIG.emailBulkBody || source);
+    } else if (state.emailMode === 'zone') {
+      if ([String(APP_CONFIG.emailSubject || ''), String(APP_CONFIG.emailBulkSubject || '')].includes(source)) source = String(APP_CONFIG.emailZoneSubject || APP_CONFIG.emailBulkSubject || source);
+      if ([String(APP_CONFIG.emailBody || ''), String(APP_CONFIG.emailBulkBody || '')].includes(source)) source = String(APP_CONFIG.emailZoneBody || APP_CONFIG.emailBulkBody || source);
     }
     const base = SSTUtils.template(source, data || {});
     return String(base)
       .replaceAll('{cantidad}', String(data?.cantidad ?? ''))
       .replaceAll('{nombres}', String(data?.nombres ?? ''))
+      .replaceAll('{zona}', String(data?.zona ?? ''))
       .replaceAll('{fecha}', String(data?.fecha ?? SSTUtils.formatDateEs(SSTUtils.todayIso())));
   }
 
@@ -1380,11 +1454,29 @@
     const subject = $('emailSubject').value;
     const body = $('emailBody').value;
     if (state.emailMode === 'common') {
-      if (subject === String(APP_CONFIG.emailSubject || '')) $('emailSubject').value = String(APP_CONFIG.emailBulkSubject || subject);
-      if (body === String(APP_CONFIG.emailBody || '')) $('emailBody').value = String(APP_CONFIG.emailBulkBody || body);
+      if ([String(APP_CONFIG.emailSubject || ''), String(APP_CONFIG.emailZoneSubject || '')].includes(subject)) $('emailSubject').value = String(APP_CONFIG.emailBulkSubject || subject);
+      if ([String(APP_CONFIG.emailBody || ''), String(APP_CONFIG.emailZoneBody || '')].includes(body)) $('emailBody').value = String(APP_CONFIG.emailBulkBody || body);
+    } else if (state.emailMode === 'zone') {
+      if ([String(APP_CONFIG.emailSubject || ''), String(APP_CONFIG.emailBulkSubject || '')].includes(subject)) $('emailSubject').value = String(APP_CONFIG.emailZoneSubject || APP_CONFIG.emailBulkSubject || subject);
+      if ([String(APP_CONFIG.emailBody || ''), String(APP_CONFIG.emailBulkBody || '')].includes(body)) $('emailBody').value = String(APP_CONFIG.emailZoneBody || APP_CONFIG.emailBulkBody || body);
     } else {
-      if (subject === String(APP_CONFIG.emailBulkSubject || '')) $('emailSubject').value = String(APP_CONFIG.emailSubject || subject);
-      if (body === String(APP_CONFIG.emailBulkBody || '')) $('emailBody').value = String(APP_CONFIG.emailBody || body);
+      if ([String(APP_CONFIG.emailBulkSubject || ''), String(APP_CONFIG.emailZoneSubject || '')].includes(subject)) $('emailSubject').value = String(APP_CONFIG.emailSubject || subject);
+      if ([String(APP_CONFIG.emailBulkBody || ''), String(APP_CONFIG.emailZoneBody || '')].includes(body)) $('emailBody').value = String(APP_CONFIG.emailBody || body);
+    }
+  }
+
+  function renderZoneControls() {
+    const zones = knownEmailZones();
+    const filter = $('emailZoneFilter');
+    if (filter) {
+      const current = state.emailZoneFilter || 'ALL';
+      filter.innerHTML = `<option value="ALL">Todas las zonas</option><option value="__NONE__">Sin zona</option>${zones.map((z)=>`<option value="${SSTUtils.escapeHtml(z)}">${SSTUtils.escapeHtml(z)}</option>`).join('')}`;
+      filter.value = [...filter.options].some((o)=>o.value===current) ? current : 'ALL';
+      state.emailZoneFilter = filter.value;
+    }
+    const box = $('emailZoneRecipients');
+    if (box) {
+      box.innerHTML = zones.length ? zones.map((zone)=>`<label class="zone-recipient-card"><span><strong>${SSTUtils.escapeHtml(zone)}</strong><small>${state.documents.filter((d)=>documentZone(d)===zone).length} colaborador(es)</small></span><input type="email" data-zone-recipient="${SSTUtils.escapeHtml(zone)}" value="${SSTUtils.escapeHtml(zoneRecipient(zone))}" placeholder="responsable@empresa.com"></label>`).join('') : '<div class="empty-state compact"><span>⌁</span><strong>Aún no hay zonas detectadas</strong><p>La zona se crea automáticamente con el lugar/ciudad identificado en los PDF.</p></div>';
     }
   }
 
@@ -1392,16 +1484,27 @@
     qsa('[data-email-mode]').forEach((b) => b.classList.toggle('active', b.dataset.emailMode === state.emailMode));
     qsa('[data-email-format]').forEach((b) => b.classList.toggle('active', b.dataset.emailFormat === state.emailFormat));
     $('emailCommonToWrap').classList.toggle('hidden', state.emailMode !== 'common');
-    qsa('.recipient-row').forEach((row) => row.classList.toggle('common-mode', state.emailMode === 'common'));
-    $('emailAttachmentSummary').textContent = `${state.emailFormat} · ${state.emailMode === 'common' ? 'destinatario único' : 'envío individual'}`;
+    if ($('emailZoneTools')) $('emailZoneTools').classList.toggle('hidden', state.emailMode !== 'zone');
+    qsa('.recipient-row').forEach((row) => row.classList.toggle('common-mode', state.emailMode === 'common' || state.emailMode === 'zone'));
+    const modeLabel = state.emailMode === 'common' ? 'destinatario único' : (state.emailMode === 'zone' ? 'lotes por zona' : 'envío individual');
+    $('emailAttachmentSummary').textContent = `${state.emailFormat} · ${modeLabel}`;
+  }
+
+  function zoneFilterMatches(doc) {
+    const filter = state.emailZoneFilter || 'ALL';
+    if (filter === 'ALL') return true;
+    if (filter === '__NONE__') return documentZone(doc) === 'Sin zona';
+    return zoneKey(documentZone(doc)) === zoneKey(filter);
   }
 
   function renderEmail() {
     ensureEmailTemplateForMode();
+    renderZoneControls();
     const generatedDocs = state.outputs.map((o) => ({ o, d: state.documents.find((d) => d.id === o.id) })).filter((x) => x.d);
     const validIds = new Set(generatedDocs.map((x) => x.o.id));
     state.selectedEmailIds = new Set([...state.selectedEmailIds].filter((id) => validIds.has(id)));
-    $('emailRecipients').innerHTML = generatedDocs.length ? generatedDocs.map(({o,d}) => `<label class="recipient-row ${state.emailMode==='common'?'common-mode':''}"><input type="checkbox" class="email-select" data-email-id="${o.id}" ${state.selectedEmailIds.has(o.id)?'checked':''}><div class="recipient-fields"><div><strong>${SSTUtils.escapeHtml(d.data?.nombre || o.personName)}</strong><small>${SSTUtils.escapeHtml(d.fileName || o.sourceName || o.filename)}</small><span class="recipient-file-format">${SSTUtils.escapeHtml(state.emailFormat)}</span></div><input class="email-to" data-email-to="${o.id}" type="email" value="${SSTUtils.escapeHtml(d.data?.correo || '')}" placeholder="correo@empresa.com"></div></label>`).join('') : '<div class="empty-state compact"><span>✉</span><strong>No hay documentos generados</strong></div>';
+    const visibleDocs = state.emailMode === 'zone' ? generatedDocs.filter(({d})=>zoneFilterMatches(d)) : generatedDocs;
+    $('emailRecipients').innerHTML = visibleDocs.length ? visibleDocs.map(({o,d}) => `<label class="recipient-row ${state.emailMode==='common'||state.emailMode==='zone'?'common-mode':''}"><input type="checkbox" class="email-select" data-email-id="${o.id}" ${state.selectedEmailIds.has(o.id)?'checked':''}><div class="recipient-fields"><div><strong>${SSTUtils.escapeHtml(d.data?.nombre || o.personName)}</strong><small>${SSTUtils.escapeHtml(d.fileName || o.sourceName || o.filename)}</small><span class="zone-chip ${documentZone(d)==='Sin zona'?'warn':''}">${SSTUtils.escapeHtml(documentZone(d))}</span><span class="recipient-file-format">${SSTUtils.escapeHtml(state.emailFormat)}</span></div><input class="email-to" data-email-to="${o.id}" type="email" value="${SSTUtils.escapeHtml(d.data?.correo || '')}" placeholder="correo@empresa.com"></div></label>`).join('') : '<div class="empty-state compact"><span>✉</span><strong>No hay documentos para este filtro</strong></div>';
     syncEmailModeUi();
     updateEmailPreview();
   }
@@ -1416,7 +1519,9 @@
   function updateEmailPreview() {
     const items = selectedEmailItems();
     $('emailSelectionCount').textContent = `${items.length} seleccionado${items.length===1?'':'s'}`;
-    $('btnSelectAllEmail').textContent = state.outputs.length && items.length === state.outputs.length ? 'Quitar selección' : 'Seleccionar todos';
+    const visibleOutputs = state.outputs.filter((o)=>{const d=state.documents.find((x)=>x.id===o.id);return d && (state.emailMode!=='zone' || zoneFilterMatches(d));});
+    const visibleSelected = visibleOutputs.filter((o)=>state.selectedEmailIds.has(o.id)).length;
+    $('btnSelectAllEmail').textContent = visibleOutputs.length && visibleSelected === visibleOutputs.length ? 'Quitar selección' : (state.emailMode==='zone' && state.emailZoneFilter!=='ALL' ? 'Seleccionar zona' : 'Seleccionar todos');
     syncEmailModeUi();
     const formats = emailFormats();
     if (!items.length) {
@@ -1431,41 +1536,35 @@
       $('emailPreviewCards').innerHTML = `<div class="email-preview-card common"><strong>${SSTUtils.escapeHtml(to || 'Destinatario común pendiente')} · ${items.length} documento(s)</strong><small>${SSTUtils.escapeHtml(applyEmailTemplate($('emailSubject').value,ctx))}</small><span class="attachment-line">${formats.length * items.length} adjunto(s) previstos · ${SSTUtils.escapeHtml(formats.join(' + '))}</span><ul class="email-preview-list">${names}${more}</ul></div>`;
       return;
     }
+    if (state.emailMode === 'zone') {
+      const grouped = new Map();
+      items.forEach((item)=>{const zone=documentZone(item.doc); if(!grouped.has(zone)) grouped.set(zone,[]); grouped.get(zone).push(item);});
+      $('emailPreviewCards').innerHTML = [...grouped.entries()].map(([zone,group])=>{
+        const to = zone === 'Sin zona' ? '' : zoneRecipient(zone);
+        const ctx = emailTemplateContext(group, zone);
+        const names = group.slice(0,6).map(({doc})=>`<li>${SSTUtils.escapeHtml(doc.data?.nombre || doc.fileName)}</li>`).join('');
+        const more = group.length>6?`<li>+ ${group.length-6} colaborador(es)</li>`:'';
+        return `<div class="email-preview-card zone"><strong>${SSTUtils.escapeHtml(zone)} · ${group.length} documento(s)</strong><small>${SSTUtils.escapeHtml(to || 'Destinatario de zona pendiente')}</small><span class="attachment-line">${formats.length*group.length} adjunto(s) · ${SSTUtils.escapeHtml(formats.join(' + '))}</span><p>${SSTUtils.escapeHtml(applyEmailTemplate($('emailSubject').value,ctx))}</p><ul class="email-preview-list">${names}${more}</ul></div>`;
+      }).join('');
+      return;
+    }
     $('emailPreviewCards').innerHTML = items.map(({doc,output,to}) => `<div class="email-preview-card"><strong>${SSTUtils.escapeHtml(doc.data?.nombre || output.personName)} · ${SSTUtils.escapeHtml(to || 'Sin correo')}</strong><small>${SSTUtils.escapeHtml(applyEmailTemplate($('emailSubject').value,doc.data))}</small><span class="attachment-line">${SSTUtils.escapeHtml(formats.join(' + '))}</span></div>`).join('');
   }
 
-  async function buildEmailAttachments(items, formats) {
-    const result = [];
-    for (let i=0; i<items.length; i++) {
-      const {doc} = items[i];
-      for (const format of formats) {
-        $('btnSendEmails').textContent = `Preparando ${i+1}/${items.length} · ${format}…`;
-        const generated = await SSTGenerator.generateForEmail(doc, format);
-        const output = generated.output;
-        result.push({ doc, output, size:Number(output.blob?.size || 0) });
-      }
+  async function assignZoneToSelectedEmailDocs() {
+    const ids=[...state.selectedEmailIds];
+    if (!ids.length) return toast('Selecciona colaboradores','Marca los documentos cuyas zonas deseas recalcular desde el lugar del PDF.','warn');
+    const docs=[]; let updated=0, unresolved=0;
+    for (const id of ids) {
+      const doc=state.documents.find((d)=>d.id===id); if(!doc)continue;
+      const zone=SSTProfiles.zoneFromPlace(doc.data?.lugar || '');
+      if (!zone) { unresolved++; continue; }
+      if (doc.data.zona !== zone) { doc.data.zona=zone; doc.updatedAt=new Date().toISOString(); await SSTDB.put(SSTDB.stores.documents,doc); updated++; }
+      docs.push(doc);
     }
-    return result;
-  }
-
-  function groupEmailAttachments(attachments, maxBytes) {
-    const groups=[]; let current=[], size=0;
-    for (const item of attachments) {
-      if (item.size > maxBytes) throw new Error(`${item.output.filename} supera el tamaño seguro permitido para correo.`);
-      if (current.length && size + item.size > maxBytes) { groups.push(current); current=[]; size=0; }
-      current.push(item); size += item.size;
-    }
-    if (current.length) groups.push(current);
-    return groups;
-  }
-
-  async function serializeAttachments(items) {
-    const out=[];
-    for (const item of items) {
-      const buffer=await item.output.blob.arrayBuffer();
-      out.push({filename:item.output.filename,mime:item.output.mime,base64:SSTUtils.arrayBufferToBase64(buffer)});
-    }
-    return out;
+    if (docs.length) { try { await syncDocumentsToBackend(docs,{silent:true}); } catch(error){ console.warn('No se pudo sincronizar la zona automática:',error); } }
+    renderEmail(); renderDocumentList(); renderControlTable();
+    toast('Zonas recalculadas',`${updated} actualizada(s) desde el lugar del PDF${unresolved?` · ${unresolved} sin lugar reconocible`:''}.`,unresolved?'warn':'success',7000);
   }
 
   function correspondenceRecord(doc, recipient, formats, attachments = []) {
@@ -1474,6 +1573,7 @@
       consecutive:String(doc?.data?.consecutivo || ''),
       worker:String(doc?.data?.nombre || ''),
       identification:String(doc?.data?.identificacion || ''),
+      zone:documentZone(doc) === 'Sin zona' ? '' : documentZone(doc),
       date:String(doc?.data?.fecha || ''),
       role:String(doc?.data?.cargo || ''),
       exam:String(doc?.data?.tipo_examen || ''),
@@ -1493,6 +1593,13 @@
     if (invalidCopies.length) return toast('Revisa CC/CCO', invalidCopies.join(', '), 'warn');
     const commonTo=$('emailCommonTo').value.trim().toLowerCase();
     if (state.emailMode === 'common' && !SSTUtils.validEmail(commonTo)) return toast('Destinatario común inválido','Escribe el correo de la persona que recibirá todos los archivos.','warn');
+    if (state.emailMode === 'zone') {
+      const noZone = items.filter((x)=>documentZone(x.doc)==='Sin zona');
+      if (noZone.length) return toast('Hay colaboradores sin zona',`${noZone.length} documento(s) seleccionados todavía no tienen zona asignada.`,'warn',8000);
+      const zones=[...new Set(items.map((x)=>documentZone(x.doc)))];
+      const withoutRecipient=zones.filter((z)=>!SSTUtils.validEmail(zoneRecipient(z)));
+      if (withoutRecipient.length) return toast('Faltan destinatarios por zona',`Configura un correo válido para: ${withoutRecipient.join(', ')}.`,'warn',9000);
+    }
     if (state.emailMode === 'individual') {
       const invalid=items.filter((x)=>!SSTUtils.validEmail(x.to)); if (invalid.length) return toast('Correos inválidos', invalid.map((x)=>x.doc.data?.nombre || x.doc.fileName).join(', '), 'warn');
     }
@@ -1501,7 +1608,32 @@
     $('btnSendEmails').disabled=true; let ok=0; const errors=[];
     try {
       const attachments = await buildEmailAttachments(items, formats);
-      if (state.emailMode === 'common') {
+      if (state.emailMode === 'zone') {
+        const byZone = new Map();
+        items.forEach((item)=>{const zone=documentZone(item.doc); if(!byZone.has(zone)) byZone.set(zone,[]); byZone.get(zone).push(item);});
+        const maxBytes = Math.max(1, Number(APP_CONFIG.maxEmailRawBatchMb || 14)) * 1024 * 1024;
+        let zoneIndex=0;
+        for (const [zone, zoneItems] of byZone.entries()) {
+          zoneIndex++;
+          const to=zoneRecipient(zone);
+          const ids=new Set(zoneItems.map((x)=>x.doc.id));
+          const zoneAttachments=attachments.filter((a)=>ids.has(a.doc.id));
+          const groups=groupEmailAttachments(zoneAttachments,maxBytes);
+          const ctx=emailTemplateContext(zoneItems,zone);
+          for (let i=0;i<groups.length;i++) {
+            $('btnSendEmails').textContent=`${zone} · paquete ${i+1}/${groups.length}…`;
+            try {
+              const list=await serializeAttachments(groups[i]);
+              const subjectBase=applyEmailTemplate(subjectTpl,ctx);
+              const subject=groups.length>1?`${subjectBase} · paquete ${i+1}/${groups.length}`:subjectBase;
+              const groupDocs=[...new Map(groups[i].map((a)=>[a.doc.id,a.doc])).values()];
+              const records=groupDocs.map((doc)=>correspondenceRecord(doc,to,[...new Set(groups[i].filter((a)=>a.doc.id===doc.id).map((a)=>a.output.format))],groups[i].filter((a)=>a.doc.id===doc.id).map((a)=>a.output.filename)));
+              const response=await SSTBackend.call('sendEmail',{to,cc,bcc,subject,body:applyEmailTemplate(bodyTpl,ctx),attachments:list,formats:formats.join(' + '),records,zone,sourceFile:groupDocs.map((d)=>d.fileName).join(' | '),personName:`${zone} · ${groupDocs.length} documento(s)`},{timeout:150000});
+              ok++; if (response?.history) state.emailHistory.unshift(response.history); if (response?.correspondence?.ok===false) errors.push(`${zone} paquete ${i+1}: correo enviado, pero el registro de correspondencia falló: ${response.correspondence.error}`);
+            } catch (error) { errors.push(`${zone} paquete ${i+1}: ${error.message}`); }
+          }
+        }
+      } else if (state.emailMode === 'common') {
         const maxBytes = Math.max(1, Number(APP_CONFIG.maxEmailRawBatchMb || 14)) * 1024 * 1024;
         const groups = groupEmailAttachments(attachments, maxBytes);
         const ctx = emailTemplateContext(items);
@@ -1530,9 +1662,9 @@
           } catch (error) { errors.push(`${doc.data?.nombre || doc.fileName}: ${error.message}`); }
         }
       }
-      await SSTDB.setSetting('emailSubject', subjectTpl); await SSTDB.setSetting('emailBody', bodyTpl); await SSTDB.setSetting('emailMode', state.emailMode); await SSTDB.setSetting('emailAttachmentFormat', state.emailFormat); await SSTDB.setSetting('emailCommonTo', commonTo);
+      await SSTDB.setSetting('emailSubject', subjectTpl); await SSTDB.setSetting('emailBody', bodyTpl); await SSTDB.setSetting('emailMode', state.emailMode); await SSTDB.setSetting('emailAttachmentFormat', state.emailFormat); await SSTDB.setSetting('emailCommonTo', commonTo); await SSTDB.setSetting('emailZoneFilter', state.emailZoneFilter); await SSTDB.setSetting('emailZoneRecipients', state.emailZoneRecipients);
       renderDashboard(); renderControlTable(); $('emailConfirm').checked=false;
-      if (ok) toast('Envío completado', state.emailMode==='common' ? `${ok} paquete(s) enviados a ${commonTo}.` : `${ok} de ${items.length} correo(s) enviados.`, 'success', 7000); if (errors.length) toast('Algunos correos fallaron', errors.join(' | '), 'error', 10000);
+      if (ok) toast('Envío completado', state.emailMode==='common' ? `${ok} paquete(s) enviados a ${commonTo}.` : (state.emailMode==='zone' ? `${ok} paquete(s) enviados, agrupados por zona.` : `${ok} de ${items.length} correo(s) enviados.`), 'success', 7000); if (errors.length) toast('Algunos correos fallaron', errors.join(' | '), 'error', 10000);
     } catch (error) {
       console.error(error); toast('No se pudo preparar el envío', error.message, 'error', 9000);
     } finally { $('btnSendEmails').disabled=false; $('btnSendEmails').textContent='Confirmar y enviar'; }
@@ -1542,8 +1674,8 @@
     const pill=(text,type='')=>`<span class="table-pill ${type}">${SSTUtils.escapeHtml(text)}</span>`;
     let headers=[], rows=[];
     if (state.controlTab==='validation') {
-      headers=['PDF','Trabajador','Motor','Calidad','Apps Script','Campos a revisar','Exámenes','Recomendaciones','Pendientes','Versión'];
-      rows=state.documents.map((d)=>[d.fileName,d.data?.nombre||'',d.data?.modo_validacion||'Motor local',d.data?.calidad_extraccion||'—',d.remoteSyncStatus==='synced'?'Sincronizado':(d.remoteSyncStatus==='error'?'Error de sincronización':'Pendiente'),(d.data?.campos_revision||[]).join(', '),(d.data?.examenes_lista||[]).length,(d.data?.recomendaciones_lista||[]).length,(d.data?.recomendaciones_pendientes_revision||[]).length,d.pipelineVersion||'Anterior']);
+      headers=['PDF','Trabajador','Zona','Motor','Calidad','Apps Script','Campos a revisar','Exámenes','Recomendaciones','Pendientes','Versión'];
+      rows=state.documents.map((d)=>[d.fileName,d.data?.nombre||'',documentZone(d),d.data?.modo_validacion||'Motor local',d.data?.calidad_extraccion||'—',d.remoteSyncStatus==='synced'?'Sincronizado':(d.remoteSyncStatus==='error'?'Error de sincronización':'Pendiente'),(d.data?.campos_revision||[]).join(', '),(d.data?.examenes_lista||[]).length,(d.data?.recomendaciones_lista||[]).length,(d.data?.recomendaciones_pendientes_revision||[]).length,d.pipelineVersion||'Anterior']);
     } else if (state.controlTab==='package') {
       headers=['Trabajador','PDF origen','Estado','Archivo final','Consecutivo'];
       rows=state.documents.map((d)=>{const o=state.outputs.find((x)=>x.id===d.id);return[d.data?.nombre||'Sin nombre',d.fileName,o?(d.dirty?'Desactualizado':'Listo'):'Pendiente',o?.filename||'—',o?.consecutive||'—'];});
@@ -1696,12 +1828,20 @@
     const openFile=()=>$('pdfInput').click(); $('btnQuickUpload').addEventListener('click',()=>{showView('documents');openFile();}); $('btnUploadMain').addEventListener('click',openFile); $('dropZone').addEventListener('click',openFile); $('pdfInput').addEventListener('change',(e)=>{handleFiles(e.target.files);e.target.value='';});
     for(const type of ['dragenter','dragover'])$('dropZone').addEventListener(type,(e)=>{e.preventDefault();$('dropZone').classList.add('dragover');}); for(const type of ['dragleave','drop'])$('dropZone').addEventListener(type,(e)=>{e.preventDefault();$('dropZone').classList.remove('dragover');}); $('dropZone').addEventListener('drop',(e)=>handleFiles(e.dataTransfer.files));
     $('documentSearch').addEventListener('input',renderDocumentList); $('documentList').addEventListener('click',async(e)=>{const check=e.target.closest('.batch-select');if(check){e.stopPropagation();const id=check.dataset.batchId;check.checked?state.selectedBatchIds.add(id):state.selectedBatchIds.delete(id);renderBatchSelectionSummary();return;}const del=e.target.closest('[data-delete-doc]');if(del){e.preventDefault();e.stopPropagation();await deleteDocumentById(del.dataset.deleteDoc);return;}const item=e.target.closest('[data-doc-id]');if(item){state.selectedDocId=item.dataset.docId;renderDocumentList();renderEditor();}}); $('recentDocuments').addEventListener('click',(e)=>{const item=e.target.closest('[data-dashboard-doc]');if(item){state.selectedDocId=item.dataset.dashboardDoc;showView('documents');renderDocumentList();renderEditor();}});
-    ['fieldName','fieldId','fieldEmail','fieldRole','fieldExamType','fieldDate','fieldPlace','fieldSurveillance','fieldObservations','fieldReferrals','fieldRestrictions','fieldExams','fieldPending'].forEach((id)=>$(id).addEventListener('input',syncEditorToState));
+    ['fieldName','fieldId','fieldEmail','fieldRole','fieldExamType','fieldDate','fieldPlace','fieldZone','fieldSurveillance','fieldObservations','fieldReferrals','fieldRestrictions','fieldExams','fieldPending'].forEach((id)=>$(id).addEventListener('input',syncEditorToState));
     $('recommendationGroups').addEventListener('input',syncEditorToState); $('recommendationGroups').addEventListener('click',(e)=>{if(e.target.classList.contains('remove-group')){e.target.closest('.recommendation-card').remove();syncEditorToState();}}); $('btnAddRecommendationGroup').addEventListener('click',()=>{const wrapper=document.createElement('div');wrapper.className='recommendation-card';wrapper.innerHTML='<div class="recommendation-card-head"><input class="rec-exam" value="Nuevo examen" aria-label="Examen"><button class="remove-group" type="button">×</button></div><textarea class="rec-text" rows="4" placeholder="Detalle completo del examen. Puedes separar hallazgos por línea; al generar se integrarán en un solo párrafo."></textarea>';$('recommendationGroups').appendChild(wrapper);wrapper.querySelector('.rec-exam').select();syncEditorToState();});
     $('btnDeleteSelected').addEventListener('click',()=>{const d=selectedDocument();if(d)deleteDocumentById(d.id);else toast('Sin selección','Selecciona un certificado.','warn');}); $('btnResolveQualityReview')?.addEventListener('click',async()=>{const doc=selectedDocument();if(!doc)return;syncEditorToState();doc.data.campos_revision=[];doc.data.revision_manual_at=new Date().toISOString();doc.dirty=true;doc.updatedAt=doc.data.revision_manual_at;await SSTDB.put(SSTDB.stores.documents,doc);try{await syncDocumentsToBackend([doc],{silent:true});}catch(syncError){doc.remoteSyncStatus='error';doc.remoteSyncError=syncError.message;await SSTDB.put(SSTDB.stores.documents,doc);}renderEditor();renderDocumentList();renderDashboard();renderControlTable();toast('Revisión manual registrada','El control de calidad quedó marcado como resuelto para este certificado.','success');}); $('btnRetryPendingAi')?.addEventListener('click',()=>{state.aiRecoveryScheduled=false;state.aiRecoveryPasses=0;autoAuditPendingDocuments().catch((error)=>toast('No fue posible reintentar IA',error.message,'error',9000));}); $('btnValidateAiSelected').addEventListener('click',validateSelectedWithAi); $('btnGenerateSelected').addEventListener('click',generateSelected); $('btnGenerateSelectedBatch')?.addEventListener('click',generateSelectedBatch); $('btnGenerateAll').addEventListener('click',generateAll); $('btnGenerateAll2').addEventListener('click',generateAll); $('btnSelectAllDocs')?.addEventListener('click',()=>{state.documents.forEach((d)=>state.selectedBatchIds.add(d.id));renderDocumentList();}); $('btnClearDocSelection')?.addEventListener('click',()=>{state.selectedBatchIds.clear();renderDocumentList();}); $('btnPreviewOriginal').addEventListener('click',()=>openOriginalModal(selectedDocument())); $('btnClearLoaded').addEventListener('click',clearLoadedDocuments);
     $('originalList').addEventListener('click',async(e)=>{const del=e.target.closest('[data-delete-doc]');if(del){e.preventDefault();e.stopPropagation();await deleteDocumentById(del.dataset.deleteDoc);return;}const item=e.target.closest('[data-original-id]');if(item){state.selectedOriginalId=item.dataset.originalId;state.originalPage=1;renderOriginals();}}); $('btnPrevPage').addEventListener('click',()=>{if(state.originalPage>1){state.originalPage--;renderOriginals();}}); $('btnNextPage').addEventListener('click',()=>{const d=state.documents.find((x)=>x.id===state.selectedOriginalId);if(d&&state.originalPage<(d.pageCount||1)){state.originalPage++;renderOriginals();}}); $('btnDownloadOriginal').addEventListener('click',()=>{const d=state.documents.find((x)=>x.id===state.selectedOriginalId);if(d)SSTUtils.downloadBlob(d.blob,`ORIGINAL_${d.fileName}`);}); $('btnIndexOriginals').addEventListener('click',()=>{renderOriginals();toast('Índice actualizado',`${state.documents.length} PDF disponibles sin reprocesar.`,'success');});
     $('generatedList').addEventListener('click',(e)=>{const item=e.target.closest('[data-output-id]');if(item){state.selectedOutputId=item.dataset.outputId;renderGenerated();}}); $('btnDownloadGenerated').addEventListener('click',()=>{const o=selectedOutput();if(o)SSTUtils.downloadBlob(o.blob,o.filename);}); $('btnDownloadZip').addEventListener('click',async()=>{if(!state.outputs.length)return toast('Sin archivos','No hay documentos para comprimir.','warn');try{const zip=await SSTGenerator.makeZip(state.outputs);SSTUtils.downloadBlob(zip,`Lote_SST_JER_SA_${SSTUtils.todayIso().replaceAll('-','')}.zip`);}catch(e){toast('No se pudo crear el ZIP',e.message,'error');}});
-    $('emailRecipients').addEventListener('input',(e)=>{if(e.target.matches('.email-to')){const id=e.target.dataset.emailTo,d=state.documents.find((x)=>x.id===id);if(d){d.data.correo=e.target.value.trim();d.updatedAt=new Date().toISOString();SSTDB.put(SSTDB.stores.documents,d);}}updateEmailPreview();}); $('emailRecipients').addEventListener('change',(e)=>{if(e.target.matches('.email-select')){const id=e.target.dataset.emailId;e.target.checked?state.selectedEmailIds.add(id):state.selectedEmailIds.delete(id);}updateEmailPreview();}); $('emailSubject').addEventListener('input',updateEmailPreview); $('emailBody').addEventListener('input',updateEmailPreview); $('emailCommonTo').addEventListener('input',updateEmailPreview); $('btnSelectAllEmail').addEventListener('click',()=>{const allSelected=state.outputs.length&&state.selectedEmailIds.size===state.outputs.length;state.selectedEmailIds=allSelected?new Set():new Set(state.outputs.map((o)=>o.id));renderEmail();}); qsa('[data-email-mode]').forEach((b)=>b.addEventListener('click',async()=>{state.emailMode=b.dataset.emailMode;await SSTDB.setSetting('emailMode',state.emailMode);renderEmail();})); qsa('[data-email-format]').forEach((b)=>b.addEventListener('click',async()=>{state.emailFormat=b.dataset.emailFormat;await SSTDB.setSetting('emailAttachmentFormat',state.emailFormat);renderEmail();})); $('btnSendEmails').addEventListener('click',sendEmails);
+    $('emailRecipients').addEventListener('input',(e)=>{if(e.target.matches('.email-to')){const id=e.target.dataset.emailTo,d=state.documents.find((x)=>x.id===id);if(d){d.data.correo=e.target.value.trim();d.updatedAt=new Date().toISOString();SSTDB.put(SSTDB.stores.documents,d);}}updateEmailPreview();});
+    $('emailRecipients').addEventListener('change',(e)=>{if(e.target.matches('.email-select')){const id=e.target.dataset.emailId;e.target.checked?state.selectedEmailIds.add(id):state.selectedEmailIds.delete(id);}updateEmailPreview();});
+    $('emailSubject').addEventListener('input',updateEmailPreview); $('emailBody').addEventListener('input',updateEmailPreview); $('emailCommonTo').addEventListener('input',updateEmailPreview);
+    $('btnSelectAllEmail').addEventListener('click',()=>{const visible=state.outputs.filter((o)=>{const d=state.documents.find((x)=>x.id===o.id);return d&&(state.emailMode!=='zone'||zoneFilterMatches(d));});const allSelected=visible.length&&visible.every((o)=>state.selectedEmailIds.has(o.id));visible.forEach((o)=>allSelected?state.selectedEmailIds.delete(o.id):state.selectedEmailIds.add(o.id));renderEmail();});
+    qsa('[data-email-mode]').forEach((b)=>b.addEventListener('click',async()=>{state.emailMode=b.dataset.emailMode;await SSTDB.setSetting('emailMode',state.emailMode);renderEmail();})); qsa('[data-email-format]').forEach((b)=>b.addEventListener('click',async()=>{state.emailFormat=b.dataset.emailFormat;await SSTDB.setSetting('emailAttachmentFormat',state.emailFormat);renderEmail();}));
+    if ($('emailZoneFilter')) $('emailZoneFilter').addEventListener('change',async(e)=>{state.emailZoneFilter=e.target.value;await SSTDB.setSetting('emailZoneFilter',state.emailZoneFilter);renderEmail();});
+    if ($('btnAssignZone')) $('btnAssignZone').addEventListener('click',assignZoneToSelectedEmailDocs);
+    if ($('emailZoneRecipients')) $('emailZoneRecipients').addEventListener('input',async(e)=>{if(!e.target.matches('[data-zone-recipient]'))return;const zone=e.target.dataset.zoneRecipient;state.emailZoneRecipients[zone]=e.target.value.trim().toLowerCase();await SSTDB.setSetting('emailZoneRecipients',state.emailZoneRecipients);updateEmailPreview();});
+    $('btnSendEmails').addEventListener('click',sendEmails);
     qsa('[data-control-tab]').forEach((b)=>b.addEventListener('click',()=>{state.controlTab=b.dataset.controlTab;qsa('[data-control-tab]').forEach((x)=>x.classList.toggle('active',x===b));renderControlTable();}));
     $('btnSettingsTestBackend').addEventListener('click',()=>saveBackendUrl('settingsBackendUrl')); $('btnBackendWriteProbe')?.addEventListener('click',testBackendWrite); $('btnSettingsSaveBackend').addEventListener('click',async()=>{if(await saveBackendUrl('settingsBackendUrl'))await showAuthIfNeeded();}); $('btnSaveAi').addEventListener('click',saveAiSettings); $('btnTestAi')?.addEventListener('click',async()=>{
       const ready=await ensureAiReady({notify:true});

@@ -136,19 +136,14 @@
   function serializeXml(doc) { return new XMLSerializer().serializeToString(doc); }
 
   function subjectExamLabel(value) {
-    const raw=String(value||'').trim(); const n=raw.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
-    if(/SEGUIMIENTO/.test(n)) return 'SEGUIMIENTO LABORAL';
-    if(/PERIODIC/.test(n)) return 'PERIÓDICO';
-    if(/POST\s*INCAPAC/.test(n)) return 'POST INCAPACIDAD';
-    if(/CAMBIO\s+DE\s+CARGO/.test(n)) return 'CAMBIO DE CARGO';
-    if(/INGRESO|PREINGRESO/.test(n)) return 'INGRESO';
-    if(/EGRESO|RETIRO/.test(n)) return 'EGRESO';
-    return raw.replace(/^EXAMEN\s+(?:M[ÉE]DICO\s+OCUPACIONAL\s+)?(?:DE\s+)?/i,'').trim().toLocaleUpperCase('es-CO') || 'OCUPACIONAL';
+    const canonical = window.SSTProfiles?.canonicalExamType?.(value) || '';
+    return canonical ? canonical.toLocaleUpperCase('es-CO') : 'TIPO DE EXAMEN POR VALIDAR';
   }
+
 
   class DocxEngine {
     constructor() {
-      this.engineVersion = '2026-09-03.10.4-compact-letter-output';
+      this.engineVersion = '2026-09-07.10.16-exam-type-zone-output';
       this.criticalMarkers = [
         '{{NUMERO DE CONSECUTIVO}}',
         '{{NOMBRE DE LA PERSONA}}',

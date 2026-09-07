@@ -8,9 +8,9 @@
   <title>Portal SST · Recomendaciones Médicas</title>
   <link rel="preconnect" href="https://cdnjs.cloudflare.com" />
   <link rel="preconnect" href="https://cdn.jsdelivr.net" />
-  <link rel="icon" href="./assets/icon.svg?v=20260904-1011" type="image/svg+xml" />
-  <link rel="manifest" href="./manifest.webmanifest?v=20260904-1011" />
-  <link rel="stylesheet" href="./styles.css?v=20260904-1011" />
+  <link rel="icon" href="./assets/icon.svg?v=20260907-1016" type="image/svg+xml" />
+  <link rel="manifest" href="./manifest.webmanifest?v=20260907-1016" />
+  <link rel="stylesheet" href="./styles.css?v=20260907-1016" />
 </head>
 <body>
   <div id="appBoot" class="boot-screen">
@@ -217,9 +217,10 @@
                   <label><span>Identificación</span><input id="fieldId" data-field="identificacion" /></label>
                   <label><span>Correo</span><input id="fieldEmail" data-field="correo" type="email" /></label>
                   <label><span>Cargo</span><input id="fieldRole" data-field="cargo" /></label>
-                  <label><span>Tipo de examen</span><input id="fieldExamType" data-field="tipo_examen" /></label>
+                  <label><span>Tipo de examen</span><select id="fieldExamType" data-field="tipo_examen"><option value="">Por validar</option><option value="Ingreso">Ingreso</option><option value="Egreso">Egreso</option><option value="Seguimiento laboral">Seguimiento laboral</option><option value="Periódico">Periódico</option><option value="Post incapacidad">Post incapacidad</option><option value="Cambio de cargo">Cambio de cargo</option></select><small>Se detecta desde el PDF. Nunca se usa el concepto de aptitud (por ejemplo “cumple con el cargo”) como tipo de examen.</small></label>
                   <label><span>Fecha</span><input id="fieldDate" data-field="fecha" type="date" /></label>
                   <label><span>Lugar</span><input id="fieldPlace" data-field="lugar" /></label>
+                  <label><span>Zona</span><input id="fieldZone" data-field="zona" placeholder="Automática desde el lugar" readonly /><small>Se calcula a partir del lugar/ciudad identificado en el PDF.</small></label>
                   <label class="span-2"><span>Programa de vigilancia epidemiológica</span><input id="fieldSurveillance" data-field="vigilancia_programa" /></label>
                 </div>
 
@@ -272,7 +273,7 @@
         </section>
 
         <section class="view-section" data-view-panel="email">
-          <div class="toolbar-row"><div><span class="eyebrow">DISTRIBUCIÓN</span><h2>Correo</h2><p>Selecciona los documentos, el formato de adjunto y si el envío será individual o consolidado a un único destinatario.</p></div><span id="emailBackendBadge" class="status-badge">Backend requerido</span></div>
+          <div class="toolbar-row"><div><span class="eyebrow">DISTRIBUCIÓN</span><h2>Correo</h2><p>Envía de forma individual, a un destinatario común o crea lotes automáticos por zona con un responsable diferente para cada grupo.</p></div><span id="emailBackendBadge" class="status-badge">Backend requerido</span></div>
           <div class="email-grid">
             <section class="panel">
               <div class="panel-head"><div><span class="eyebrow">1. ARCHIVOS</span><h3>Documentos a enviar</h3></div><button id="btnSelectAllEmail" class="link-button">Seleccionar todos</button></div>
@@ -282,6 +283,7 @@
                   <div class="segmented email-segmented" id="emailModeSelector">
                     <button type="button" class="segmented-btn active" data-email-mode="individual">Cada trabajador</button>
                     <button type="button" class="segmented-btn" data-email-mode="common">Un destinatario</button>
+                    <button type="button" class="segmented-btn" data-email-mode="zone">Por zona</button>
                   </div>
                 </div>
                 <div class="email-option-block">
@@ -294,6 +296,14 @@
                 </div>
               </div>
               <label id="emailCommonToWrap" class="email-common-recipient hidden"><span>Destinatario común</span><input id="emailCommonTo" type="email" placeholder="responsable@empresa.com" /><small>Todos los archivos seleccionados se enviarán a este correo. Si el peso total supera el límite seguro, el portal los dividirá automáticamente en varios correos.</small></label>
+              <div id="emailZoneTools" class="email-zone-tools hidden">
+                <div class="zone-toolbar">
+                  <label><span>Filtrar colaboradores por zona</span><select id="emailZoneFilter"><option value="ALL">Todas las zonas</option><option value="__NONE__">Sin zona</option></select></label>
+                  <label><span>Zona automática</span><div class="zone-assign-row"><button id="btnAssignZone" class="btn secondary small" type="button">↻ Recalcular desde lugar</button></div><small>Usa el lugar detectado en cada PDF; si necesitas corregir una zona, corrige primero el campo Lugar del certificado.</small></label>
+                </div>
+                <div class="zone-help"><strong>Destinatarios por zona</strong><span>Cada zona corresponde al lugar/ciudad detectado en el PDF. Configura una sola vez el responsable de cada lugar y el portal agrupa automáticamente los colaboradores.</span></div>
+                <div id="emailZoneRecipients" class="zone-recipient-grid"></div>
+              </div>
               <div class="email-selection-summary"><strong id="emailSelectionCount">0 seleccionados</strong><span id="emailAttachmentSummary">PDF</span></div>
               <div id="emailRecipients" class="recipient-list"><div class="empty-state compact"><span>✉</span><strong>No hay documentos generados</strong></div></div>
               <div class="form-grid two compact-grid">
@@ -305,7 +315,7 @@
               <div class="panel-head"><div><span class="eyebrow">2. MENSAJE</span><h3>Plantilla editable</h3></div></div>
               <label><span>Asunto</span><input id="emailSubject" /></label>
               <label><span>Cuerpo del mensaje</span><textarea id="emailBody" rows="12"></textarea></label>
-              <div class="template-help">En envío individual puedes usar <code>{nombre}</code> y <code>{identificacion}</code>. En envío a un único destinatario también puedes usar <code>{cantidad}</code> y <code>{nombres}</code>.</div>
+              <div class="template-help">Individual: <code>{nombre}</code>, <code>{identificacion}</code>. En lotes: <code>{cantidad}</code>, <code>{nombres}</code>. En modo por zona también puedes usar <code>{zona}</code>.</div>
               <div id="emailPreviewCards" class="email-preview-cards"></div>
               <label class="confirm-check"><input id="emailConfirm" type="checkbox" /><span>Confirmo que revisé destinatarios, copias, asunto, mensaje, formato y archivos adjuntos.</span></label>
               <button id="btnSendEmails" class="btn primary full">Confirmar y enviar</button>
@@ -355,15 +365,15 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script src="https://cdn.jsdelivr.net/pyodide/v0.27.7/full/pyodide.js"></script>
-  <script src="./config.js?v=20260904-1011"></script>
-  <script src="./utils.js?v=20260904-1011"></script>
-  <script src="./db.js?v=20260904-1011"></script>
-  <script src="./backend.js?v=20260904-1011"></script>
-  <script src="./profile-engine.js?v=20260904-1011"></script>
-  <script src="./parser-bridge.js?v=20260904-1011"></script>
-  <script src="./pdf-service.js?v=20260904-1011"></script>
-  <script src="./docx-engine.js?v=20260904-1011"></script>
-  <script src="./generator.js?v=20260904-1011"></script>
-  <script src="./app.js?v=20260904-1011"></script>
+  <script src="./config.js?v=20260907-1016"></script>
+  <script src="./utils.js?v=20260907-1016"></script>
+  <script src="./db.js?v=20260907-1016"></script>
+  <script src="./backend.js?v=20260907-1016"></script>
+  <script src="./profile-engine.js?v=20260907-1016"></script>
+  <script src="./parser-bridge.js?v=20260907-1016"></script>
+  <script src="./pdf-service.js?v=20260907-1016"></script>
+  <script src="./docx-engine.js?v=20260907-1016"></script>
+  <script src="./generator.js?v=20260907-1016"></script>
+  <script src="./app.js?v=20260907-1016"></script>
 </body>
 </html>

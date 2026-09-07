@@ -96,6 +96,93 @@
     return { equivalent:false, materialConflict:false, localCategory, aiCategory, reason:'wording_difference' };
   }
 
+
+
+  const EXAM_TYPE_LABELS = Object.freeze({
+    INGRESO:'Ingreso',
+    EGRESO:'Egreso',
+    SEGUIMIENTO:'Seguimiento laboral',
+    PERIODICO:'Periódico',
+    POST_INCAPACIDAD:'Post incapacidad',
+    CAMBIO_CARGO:'Cambio de cargo'
+  });
+
+  function examTypeLabel(category) {
+    return EXAM_TYPE_LABELS[String(category || '').trim()] || '';
+  }
+
+  function categoriesInExamTypeText(value) {
+    const n = fold(value); const out=[];
+    if(!n) return out;
+    if (/POST\s*INCAPACIDAD|POSTINCAPACIDAD|REINTEGRO|REINCORPORACION|RETORNO\s+LABORAL/.test(n)) out.push('POST_INCAPACIDAD');
+    if (/CAMBIO\s+(?:DE\s+)?CARGO|CAMBIO\s+(?:DE\s+)?PUESTO/.test(n)) out.push('CAMBIO_CARGO');
+    if (/EGRESO|RETIRO/.test(n)) out.push('EGRESO');
+    if (/PRE\s*INGRESO|PREINGRESO|PRE\s*OCUPACIONAL|PREOCUPACIONAL|(?:^| )INGRESO(?: |$)/.test(n) && !/REINGRESO/.test(n)) out.push('INGRESO');
+    if (/SEGUIMIENTO|CONTROL\s+(?:DE\s+)?SEGUIMIENTO|CONTROL\s+LABORAL/.test(n)) out.push('SEGUIMIENTO');
+    if (/PERIODIC/.test(n)) out.push('PERIODICO');
+    return [...new Set(out)];
+  }
+
+  function detectExamType(text, profileId = '', currentValue = '') {
+    const currentCategories = categoriesInExamTypeText(currentValue);
+    // Nunca uses conceptos de aptitud como tipo de examen.
+    const invalidAptitude = /CUMPLE\s+(?:CON\s+)?(?:EL\s+)?CARGO|APTO\s+PARA|NO\s+CUMPLE|SIN\s+RESTRICCIONES/i.test(fold(currentValue));
+    if (currentCategories.length === 1 && !invalidAptitude) return examTypeLabel(currentCategories[0]);
+
+    const ls = lines(text); const candidates=[];
+    for (let i=0;i<ls.length;i++) {
+      const line = ls[i]; const n=fold(line); const cats=categoriesInExamTypeText(line);
+      if (cats.length !== 1) continue; // descarta leyendas que enumeran varios tipos de examen
+      const cat=cats[0]; let score=0;
+      if (/TIPO\s+DE\s+EXAMEN|CONCEPTO\s+LABORAL|CONCEPTO\s+DE\s+APTITUD|EXAMEN\s+MEDIC|EVALUACION\s+MEDIC|CONTROL\s+PERIODIC/.test(n)) score += 8;
+      if (/^(?:EXAMEN|EVALUACION|CONTROL|INGRESO|EGRESO|RETIRO|SEGUIMIENTO|PERIODIC|POST)/.test(n)) score += 4;
+      if (i < 80) score += 2;
+      if (profileId === 'CONTROL_PERIODICO' && cat === 'PERIODICO' && /CONTROL\s+PERIODIC/.test(n)) score += 12;
+      if (profileId === 'JER_TABLA' && cat === 'SEGUIMIENTO' && /EXAMEN.*SEGUIMIENTO/.test(n)) score += 8;
+      if (/PROVEEDOR|LINEAMIENT|(?:INGRESO.*PERIODIC.*EGRESO)|(?:PERIODIC.*EGRESO.*POST)/.test(n)) score -= 12;
+      candidates.push({cat, score, index:i});
+    }
+    candidates.sort((a,b)=>b.score-a.score || a.index-b.index);
+    if (candidates[0] && candidates[0].score >= 4) return examTypeLabel(candidates[0].cat);
+    // El perfil CONTROL_PERIODICO solo se asigna cuando la estructura del PDF contiene
+    // los encabezados propios de este examen; es un respaldo seguro si OCR rompe la línea.
+    if (profileId === 'CONTROL_PERIODICO') return examTypeLabel('PERIODICO');
+    return '';
+  }
+
+  function canonicalExamType(value, profileId = '', sourceText = '') {
+    const detected = detectExamType(sourceText, profileId, value);
+    if (detected) return detected;
+    const category = examTypeCategory(value);
+    return examTypeLabel(category);
+  }
+
+  function titleCasePlace(value) {
+    return String(value || '').toLocaleLowerCase('es-CO').replace(/(^|[\s\-])([a-záéíóúñü])/g, (_,a,b)=>a+b.toLocaleUpperCase('es-CO'));
+  }
+
+  // La "zona" operacional se deriva del LUGAR leído del certificado. No inventa una
+  // regional distinta: normaliza la ciudad/municipio para que el correo pueda agrupar
+  // automáticamente a todos los colaboradores del mismo lugar.
+  function zoneFromPlace(value) {
+    const raw=clean(value); if(!raw) return '';
+    const n=fold(raw);
+    const known = [
+      ['PUERTO BOYACA','Puerto Boyacá'],['CHIQUINQUIRA','Chiquinquirá'],['VILLA DE LEYVA','Villa de Leyva'],
+      ['SOGAMOSO','Sogamoso'],['DUITAMA','Duitama'],['TUNJA','Tunja'],['GARAGOA','Garagoa'],
+      ['GUATEQUE','Guateque'],['MIRAFLORES','Miraflores'],['MONIQUIRA','Moniquirá'],['SOATA','Soatá']
+    ];
+    for (const [needle,label] of known) if (n.includes(needle)) return label;
+    let city=raw
+      .replace(/\([^)]*(?:BOYAC[AÁ]|COLOMBIA)[^)]*\)/gi,' ')
+      .replace(/\b(?:BOYAC[AÁ]|COLOMBIA)\b/gi,' ')
+      .replace(/^\s*(?:CIUDAD|MUNICIPIO|LUGAR)\s*[:\-]?\s*/i,' ')
+      .split(/\s*[;,|]\s*|\s+[-–—]\s+/)[0]
+      .replace(/\s+/g,' ').trim();
+    if (!city || /^(BOYAC[AÁ]|COLOMBIA)$/i.test(city)) return '';
+    return titleCasePlace(city);
+  }
+
   function findLabelValue(ls, labels, options={}) {
     const labelsFold = labels.map(fold);
     for (let i=0;i<ls.length;i++) {
@@ -240,8 +327,8 @@
     const rows=collectExamRows(ls,['EXÁMENES DE DIAGNÓSTICO LABORAL REALIZADOS','EXAMENES DE DIAGNOSTICO LABORAL REALIZADOS'],['CONCEPTO LABORAL','CONCEPTO DE APTITUD']);
     out.examenes_lista=rows.exams; out.recomendaciones_por_examen=rows.map; out.estado_por_examen=rows.states;
     const conceptIdx=ls.findIndex((x)=>fold(x).includes('CONCEPTO LABORAL'));
-    if(conceptIdx>=0){ for(let i=conceptIdx+1;i<Math.min(ls.length,conceptIdx+5);i++){ const n=fold(ls[i]); if(n && !n.includes('OBSERVACIONES')){ out.tipo_examen=normalizeClinicalText(ls[i]); break; } } }
-    if(!out.tipo_examen){ const ex=out.examenes_lista.find((x)=>/SEGUIMIENTO|PERIODIC|INGRESO|EGRESO/i.test(fold(x))); out.tipo_examen=ex || 'Seguimiento laboral'; }
+    if(conceptIdx>=0){ for(let i=conceptIdx+1;i<Math.min(ls.length,conceptIdx+5);i++){ const n=fold(ls[i]); if(n && !n.includes('OBSERVACIONES')){ const candidate=detectExamType(ls[i], 'JER_TABLA', ls[i]); if(candidate){ out.tipo_examen=candidate; break; } } } }
+    if(!out.tipo_examen) out.tipo_examen=detectExamType(text,'JER_TABLA','');
     const obsStart=ls.findIndex((x)=>fold(x).startsWith('OBSERVACIONES'));
     if(obsStart>=0){ const pieces=[]; const first=ls[obsStart].replace(/^\s*Observaciones\s*[:.]?\s*/i,''); if(clean(first))pieces.push(first); for(let i=obsStart+1;i<ls.length;i++){ if(fold(ls[i]).includes('TIPO DE RESTRICCION'))break; if(ls[i])pieces.push(ls[i]); } out.observaciones=normalizeClinicalText(pieces.join(' ')); }
     const restrictions=[]; let inRest=false;
@@ -253,7 +340,7 @@
     let inRem=false; const rem=[]; for(const line of ls){ const n=fold(line); if(n.includes('INFORMACION DE REMISIONES')){inRem=true;continue;} if(!inRem)continue; if(/FIRMA|CONSENTIMIENTO|AUTORIZACION/.test(n))break; const c=cols(line); for(const cell of c){ const cn=fold(cell); if(cell && cn.length>3 && !cn.includes('INFORMACION DE REMISIONES') && !/^(NO|N A|NINGUNA)$/.test(cn)) rem.push(normalizeClinicalText(cell)); } } out.remisiones=uniq(rem).join('; ') || 'No';
     out.recomendaciones_lista=flattenMap(out.recomendaciones_por_examen);
     ev.perfil='Encabezados JER + tabla examen/recomendación + sección de restricciones'; out.evidencias=ev;
-    return finalize(out,'JER_TABLA');
+    return finalize(out,'JER_TABLA',text);
   }
 
   function dedupeRestrictions(items){ const seen=new Set(),out=[]; for(const r of items||[]){const text=normalizeClinicalText(r?.texto||r);const k=fold(text);if(text&&!seen.has(k)){seen.add(k);out.push({tipo:clean(r?.tipo||''),texto:text});}}return out; }
@@ -294,7 +381,8 @@
     const dp=parseDateAndPlace(rawDate); out.fecha=dp.fecha; out.lugar=dp.lugar;
     if(!out.fecha){ const joined=ls.slice(0,25).join(' '); const m=joined.match(/\b(\d{1,2})\s+(\d{1,2})\s+(20\d{2})\b/); if(m)out.fecha=`${m[3]}-${String(m[2]).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`; }
     if(!out.lugar){ const cityLine=ls.slice(0,25).find((x)=>/PUERTO BOYACA|TUNJA|DUITAMA|SOGAMOSO|CHIQUINQUIRA|BOYACA/i.test(fold(x))); if(cityLine){ const city=clean(cityLine.replace(/^.*?\b(?:20\d{2})\b[\s,:;\-]*/,'').replace(/^(?:D[IÍ]A|MES|A[NÑ]O)\b.*$/i,'')); if(city)out.lugar=normalizeClinicalText(city); } }
-    out.tipo_examen=findLabelValue(ls,['CONCEPTO DE APTITUD OCUPACIONAL'],{lookahead:4}) || 'Control periódico con recomendaciones';
+    // No leer el valor de "Concepto de aptitud" como tipo de examen: allí pueden aparecer frases como "cumple con el cargo".
+    out.tipo_examen=detectExamType(text,'CONTROL_PERIODICO','');
     const whole=fold(text); let exams=[]; for(const [key,label] of EXAMS){ if(whole.includes(key) && !exams.includes(label))exams.push(label); }
     exams = exams.filter((exam) => !exams.some((other) => other !== exam && fold(other).includes(fold(exam))));
     out.examenes_lista=exams;
@@ -337,17 +425,20 @@
     for(const rec of allRecs){ const n=fold(rec); if(/SVE\s*OSTEOMUSC|PVE\s*OSTEOMUSC/.test(n))out.vigilancia_lista.push('Prevención osteomuscular (DME)'); if(/SVE\s*VISUAL|PVE\s*VISUAL/.test(n))out.vigilancia_lista.push('Conservación visual'); }
     out.vigilancia_lista=uniq(out.vigilancia_lista); out.vigilancia_programa=out.vigilancia_lista.join(', ')||'Ninguno';
     out.evidencias={perfil:'Concepto médico ocupacional + restricciones laborales + tres columnas de recomendaciones'};
-    return finalize(out,'CONTROL_PERIODICO');
+    return finalize(out,'CONTROL_PERIODICO',text);
   }
 
-  function finalize(out, profileId) {
+  function finalize(out, profileId, sourceText = '') {
     out.nombre=clean(out.nombre); out.identificacion=clean(out.identificacion).replace(/\D/g,'') || clean(out.identificacion); out.cargo=clean(out.cargo);
-    out.correo=clean(out.correo); out.lugar=clean(out.lugar)||'Tunja'; out.fecha=clean(out.fecha); out.tipo_examen=normalizeClinicalText(out.tipo_examen||'');
+    out.correo=clean(out.correo); out.lugar=clean(out.lugar)||'Tunja'; out.fecha=clean(out.fecha);
+    out.tipo_examen_original=normalizeClinicalText(out.tipo_examen||'');
+    out.tipo_examen=canonicalExamType(out.tipo_examen_original, profileId, sourceText);
+    out.zona=zoneFromPlace(out.lugar);
     out.examenes_lista=uniq(out.examenes_lista||[]); out.recomendaciones_por_examen=out.recomendaciones_por_examen||{}; out.recomendaciones_lista=uniq(out.recomendaciones_lista||flattenMap(out.recomendaciones_por_examen));
     out.estado_por_examen=out.estado_por_examen||{};
     out.restricciones_lista=dedupeRestrictions(out.restricciones_lista||[]); out.observaciones=normalizeClinicalText(out.observaciones||''); out.remisiones=clean(out.remisiones)||'No';
     out.vigilancia_lista=uniq(out.vigilancia_lista||[]); out.vigilancia_programa=clean(out.vigilancia_programa)||'Ninguno';
-    const missing=[]; if(!out.nombre)missing.push('nombre'); if(!out.cargo)missing.push('cargo'); if(!out.examenes_lista.length)missing.push('exámenes realizados'); if(!out.recomendaciones_lista.length&&!out.restricciones_lista.length)missing.push('recomendaciones/restricciones');
+    const missing=[]; if(!out.nombre)missing.push('nombre'); if(!out.cargo)missing.push('cargo'); if(!out.tipo_examen)missing.push('tipo de examen'); if(!out.examenes_lista.length)missing.push('exámenes realizados'); if(!out.recomendaciones_lista.length&&!out.restricciones_lista.length)missing.push('recomendaciones/restricciones');
     const base = profileId==='GENERICO'?45:88; const confidence=Math.max(0,Math.min(99,base-missing.length*12+(out.identificacion?2:0)+(out.fecha?2:0)));
     out.perfil_documental = profileId==='JER_TABLA'?'Formato JER · tabla clínica':profileId==='CONTROL_PERIODICO'?'Formato control periódico · matriz clínica':'Formato genérico';
     out.motor_formato='Perfil V10.3'; out.confianza_formato=confidence; out.calidad_extraccion=confidence>=92?'Alta':confidence>=78?'Media':'Revisar'; out.campos_revision=missing; out.recomendaciones_pendientes_revision=[]; out.modo_validacion=`Motor por formato V10.3 · ${out.perfil_documental}`;
@@ -356,7 +447,7 @@
 
   function merge(primary, fallback) {
     const a=primary||{}, b=fallback||{}; const out={...b,...a};
-    for(const key of ['nombre','cargo','identificacion','correo','tipo_examen','lugar','fecha','observaciones','remisiones','vigilancia_programa']) if(!clean(a[key]))out[key]=b[key];
+    for(const key of ['nombre','cargo','identificacion','correo','tipo_examen','lugar','zona','fecha','observaciones','remisiones','vigilancia_programa']) if(!clean(a[key]))out[key]=b[key];
     if(!(a.examenes_lista||[]).length)out.examenes_lista=b.examenes_lista||[];
     if(!(a.recomendaciones_lista||[]).length){out.recomendaciones_lista=b.recomendaciones_lista||[];out.recomendaciones_por_examen=b.recomendaciones_por_examen||{};}
     if(!(a.restricciones_lista||[]).length)out.restricciones_lista=b.restricciones_lista||[];
@@ -368,9 +459,9 @@
 
   function analyze(text) {
     const profile=detectProfile(text); let data;
-    if(profile.id==='JER_TABLA')data=extractJer(text); else if(profile.id==='CONTROL_PERIODICO')data=extractControl(text); else data=finalize({},'GENERICO');
+    if(profile.id==='JER_TABLA')data=extractJer(text); else if(profile.id==='CONTROL_PERIODICO')data=extractControl(text); else data=finalize({},'GENERICO',text);
     data.perfil_detectado=profile; return data;
   }
 
-  window.SSTProfiles={ detectProfile, analyze, merge, normalizeClinicalText, examTypeCategory, compareExamTypes };
+  window.SSTProfiles={ detectProfile, analyze, merge, normalizeClinicalText, examTypeCategory, examTypeLabel, canonicalExamType, detectExamType, compareExamTypes, zoneFromPlace };
 })();

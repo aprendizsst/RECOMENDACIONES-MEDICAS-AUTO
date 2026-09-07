@@ -159,3 +159,22 @@ input:focus,textarea:focus,select:focus{border-color:#a78bfa;box-shadow:0 0 0 3p
 .status-dot.success,.mini-status.ai{background:#34d399}.status-dot.warn,.mini-status.warn{background:#f6c453}.status-dot.error{background:#fb7185}
 
 .batch-insight-strip .wide{align-items:center;flex-wrap:wrap}.batch-insight-strip .wide em{width:100%;font-style:normal;font-size:.68rem;color:#a994ba;text-align:right}.batch-insight-strip .wide em.ok{color:#80d7b0}.batch-insight-strip .wide em.warn{color:#f3bd6b}
+
+
+/* V10.16 · zona automática por lugar + distribución por zona */
+.email-zone-tools{margin:14px 0;padding:16px;border:1px solid rgba(168,85,247,.28);border-radius:18px;background:linear-gradient(145deg,rgba(88,28,135,.14),rgba(17,10,30,.72));box-shadow:inset 0 1px 0 rgba(255,255,255,.025)}
+.zone-toolbar{display:grid;grid-template-columns:minmax(180px,.75fr) minmax(260px,1.25fr);gap:12px;align-items:end}
+.zone-toolbar label,.zone-recipient-card{display:flex;flex-direction:column;gap:7px}
+.zone-toolbar label>span{font-size:.78rem;font-weight:700;color:var(--text-soft,#c7b9df)}
+.zone-assign-row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}
+.zone-help{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 12px;margin:14px 0 9px;padding-top:12px;border-top:1px solid rgba(168,85,247,.16)}
+.zone-help strong{color:#e9d5ff}.zone-help span{font-size:.78rem;color:var(--text-muted,#9f91b7)}
+.zone-recipient-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(235px,1fr));gap:10px}
+.zone-recipient-card{padding:11px 12px;border:1px solid rgba(168,85,247,.18);border-radius:14px;background:rgba(31,19,47,.66)}
+.zone-recipient-card>span{display:flex;justify-content:space-between;gap:8px;align-items:center}.zone-recipient-card strong{color:#f5efff}.zone-recipient-card small{color:#a995c5;font-size:.7rem}
+.zone-chip{display:inline-flex;align-items:center;width:max-content;margin-top:5px;padding:3px 8px;border-radius:999px;background:rgba(139,92,246,.16);border:1px solid rgba(167,139,250,.28);color:#d8b4fe;font-size:.69rem;font-weight:800;letter-spacing:.02em}
+.zone-chip.warn{background:rgba(245,158,11,.11);border-color:rgba(245,158,11,.3);color:#fbbf24}
+.email-preview-card.zone{border-color:rgba(168,85,247,.34);background:linear-gradient(150deg,rgba(76,29,149,.19),rgba(17,10,30,.78))}
+.email-preview-card.zone>strong{color:#e9d5ff}.email-preview-card.zone>p{margin:8px 0 0;color:var(--text-muted,#ad9abe);font-size:.76rem}
+select#emailZoneFilter{width:100%}
+@media(max-width:780px){.zone-toolbar{grid-template-columns:1fr}.zone-assign-row{grid-template-columns:1fr}.zone-assign-row .btn{width:100%}}

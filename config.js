@@ -1,11 +1,11 @@
 window.APP_CONFIG = Object.freeze({
   appName: "Portal SST · Recomendaciones Médicas",
   companyName: "JER S.A.",
-  version: "2026.09.04-github-pages-v10.14",
-  pipelineVersion: "2026-09-04.10.14-ai-compatibility-recovery",
-  aiValidationVersion: "2026-09-04.10.14-ai-compatible-audit",
-  documentEngineVersion: "2026-09-03.10.7-compact-letter-full-sheet-sync",
-  requiredBackendVersion: "2026.09.04-v10.14-ai-compatibility-recovery",
+  version: "2026.09.07-github-pages-v10.16",
+  pipelineVersion: "2026-09-07.10.16-exam-type-auto-zone",
+  aiValidationVersion: "2026-09-07.10.16-ai-exam-type-canonical",
+  documentEngineVersion: "2026-09-07.10.16-exam-type-zone-output",
+  requiredBackendVersion: "2026.09.07-v10.16-exam-type-auto-zone",
   defaultBackendUrl: "https://script.google.com/macros/s/AKfycbxNrv9iLsaY3lIQ6evDnf3zWVanKJNhBzDDiGWkP3W1hX6JYR0vSjMz9lINUYCg_UqVsw/exec",
   defaultGeminiModel: "gemini-3.8-flash",
   batchGeminiModel: "gemini-3.5-flash",
@@ -22,5 +22,7 @@ window.APP_CONFIG = Object.freeze({
   emailSubject: "Recomendación médica ocupacional - {nombre}",
   emailBody: `Cordial saludo,\n\nA continuación hago envío de la recomendación médica de {nombre}, identificado(a) con el número de cédula {identificacion}.\n\nSe requiere confirmar la recepción de este correo. Asimismo, el documento debe firmarse y enviarse nuevamente de forma física, diligenciado con nombre, cédula y fecha.\n\nCordialmente,\nSeguridad y Salud en el Trabajo\nJER S.A.`,
   emailBulkSubject: "Recomendaciones médicas ocupacionales - {cantidad} documentos",
-  emailBulkBody: `Cordial saludo,\n\nA continuación hago envío de {cantidad} recomendaciones médicas ocupacionales correspondientes a: {nombres}.\n\nSe requiere confirmar la recepción de este correo. Los documentos adjuntos deben ser revisados y gestionados de acuerdo con el procedimiento establecido.\n\nCordialmente,\nSeguridad y Salud en el Trabajo\nJER S.A.`
+  emailBulkBody: `Cordial saludo,\n\nA continuación hago envío de {cantidad} recomendaciones médicas ocupacionales correspondientes a: {nombres}.\n\nSe requiere confirmar la recepción de este correo. Los documentos adjuntos deben ser revisados y gestionados de acuerdo con el procedimiento establecido.\n\nCordialmente,\nSeguridad y Salud en el Trabajo\nJER S.A.`,
+  emailZoneSubject: "Recomendaciones médicas ocupacionales - Zona {zona} - {cantidad} documentos",
+  emailZoneBody: `Cordial saludo,\n\nA continuación hago envío del lote de {cantidad} recomendaciones médicas ocupacionales correspondiente a la zona {zona}. Colaboradores incluidos: {nombres}.\n\nSe requiere confirmar la recepción de este correo. Los documentos adjuntos deben ser revisados y gestionados de acuerdo con el procedimiento establecido.\n\nCordialmente,\nSeguridad y Salud en el Trabajo\nJER S.A.`
 });

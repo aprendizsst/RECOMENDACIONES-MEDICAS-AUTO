@@ -1,5 +1,5 @@
 const APP_NAME = 'Portal SST · Recomendaciones Médicas';
-const BACKEND_VERSION = '2026.09.04-v10.14-ai-compatibility-recovery';
+const BACKEND_VERSION = '2026.09.07-v10.16-exam-type-auto-zone';
 const GEMINI_GENERATE_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models/';
 const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
 const SESSION_HOURS = 8;
@@ -36,7 +36,7 @@ const CONSECUTIVE_SHEET = 'Consecutivos';
 const CONSECUTIVE_LEDGER_SHEET = 'ConsecutivosControl';
 const CONSECUTIVE_LEDGER_HEADERS = ['document_key','consecutivo','spreadsheet_id','sheet_name','creado_en'];
 const DOCUMENT_SHEET = 'DocumentosProcesados';
-const DOCUMENT_HEADERS = ['document_key','pdf_origen','trabajador','identificacion','correo','cargo','tipo_examen','fecha_examen','lugar','examenes_realizados','estados_examenes','recomendaciones','restricciones','observaciones','remisiones','vigilancia_programa','perfil_documental','calidad_extraccion','validado_ia','campos_revision','consecutivo','estado_sincronizacion','usuario','creado_en','actualizado_en'];
+const DOCUMENT_HEADERS = ['document_key','pdf_origen','trabajador','identificacion','correo','cargo','tipo_examen','fecha_examen','lugar','examenes_realizados','estados_examenes','recomendaciones','restricciones','observaciones','remisiones','vigilancia_programa','perfil_documental','calidad_extraccion','validado_ia','campos_revision','consecutivo','estado_sincronizacion','usuario','creado_en','actualizado_en','zona'];
 
 // V10.7: la hoja externa de consecutivos deja de ser solo un contador. Cuando un
 // certificado ya tiene consecutivo, la MISMA fila se completa con su ficha SST.
@@ -58,6 +58,7 @@ const CONSECUTIVE_DATA_FIELDS = [
   { key:'referrals', header:'REMISIONES', aliases:['remisiones','remision','remisión','informacion de remisiones','información de remisiones'] },
   { key:'surveillance', header:'PROGRAMA VIGILANCIA', aliases:['programa vigilancia','programa de vigilancia','vigilancia programa','pve','sve'] },
   { key:'location', header:'LUGAR', aliases:['lugar','ciudad','sede'] },
+  { key:'zone', header:'ZONA', aliases:['zona','zona sst','zona operativa','region','región'] },
   { key:'profile', header:'PERFIL DOCUMENTAL', aliases:['perfil documental','formato detectado','perfil detectado'] },
   { key:'quality', header:'CALIDAD EXTRACCION', aliases:['calidad extraccion','calidad extracción','confianza extraccion','confianza extracción'] },
   { key:'aiValidated', header:'VALIDADO IA', aliases:['validado ia','validacion ia','validación ia'] },
@@ -135,7 +136,7 @@ function apiDispatch(requestJson) {
     const sessionToken = String(req.session || '');
 
     switch (action) {
-      case 'ping': return { ok: true, message: 'Google Apps Script conectado', app: APP_NAME, backendVersion: BACKEND_VERSION, capabilities:['documentSync','sheetDiagnostics','batchConsecutives','twoSheetRouting','sstLogSync','correspondenceSync','geminiAudit','geminiFallback','geminiBackoff','geminiBatchModel','geminiProbe','email','emailMultiAttachment'], time: new Date().toISOString() };
+      case 'ping': return { ok: true, message: 'Google Apps Script conectado', app: APP_NAME, backendVersion: BACKEND_VERSION, capabilities:['documentSync','sheetDiagnostics','batchConsecutives','twoSheetRouting','sstLogSync','correspondenceSync','geminiAudit','geminiFallback','geminiBackoff','geminiBatchModel','geminiProbe','email','emailMultiAttachment','zoneBatchMail','autoZoneFromPlace','canonicalExamType'], time: new Date().toISOString() };
       case 'bootstrapStatus': return bootstrapStatus_();
       case 'register': return register_(payload);
       case 'login': return login_(payload);
@@ -398,7 +399,7 @@ function getSharedAsset_(user, payload) {
 
 function geminiSchema_() {
   return { type:'OBJECT', properties:{
-    nombre:{type:'STRING'}, cargo:{type:'STRING'}, identificacion:{type:'STRING'}, correo:{type:'STRING'}, tipo_examen:{type:'STRING'}, lugar:{type:'STRING'}, fecha:{type:'STRING',description:'AAAA-MM-DD o vacío'},
+    nombre:{type:'STRING'}, cargo:{type:'STRING'}, identificacion:{type:'STRING'}, correo:{type:'STRING'}, tipo_examen:{type:'STRING',description:'Usa solo: Ingreso, Egreso, Seguimiento laboral, Periódico, Post incapacidad o Cambio de cargo. Nunca uses conceptos de aptitud como cumple con el cargo.'}, lugar:{type:'STRING'}, fecha:{type:'STRING',description:'AAAA-MM-DD o vacío'},
     examenes_realizados:{type:'ARRAY',items:{type:'STRING'}}, estados_por_examen:{type:'ARRAY',items:{type:'OBJECT',properties:{examen:{type:'STRING'},estado:{type:'STRING'}},required:['examen','estado']}}, recomendaciones_medicas:{type:'ARRAY',items:{type:'STRING'}}, recomendaciones_por_examen:{type:'ARRAY',items:{type:'OBJECT',properties:{examen:{type:'STRING'},recomendaciones:{type:'ARRAY',items:{type:'STRING'}}},required:['examen','recomendaciones']}},
     restricciones_laborales:{type:'ARRAY',items:{type:'OBJECT',properties:{tipo:{type:'STRING'},texto:{type:'STRING'}},required:['tipo','texto']}},
     vigilancia_programa:{type:'ARRAY',items:{type:'STRING'}}, observaciones:{type:'STRING'}, remisiones:{type:'STRING'}, revision_requerida:{type:'BOOLEAN'},
@@ -582,11 +583,15 @@ FORMATO TIPO B — EXAMEN IZQUIERDA / RECOMENDACIÓN DERECHA:
 - La misma regla aplica a cualquier examen, incluso si su nombre no está en ejemplos previos: PERFIL LIPÍDICO, KOH DE UÑAS, COPROLÓGICO, FROTIS FARÍNGEO, ÉNFASIS CARDIOVASCULAR, ÉNFASIS OSTEOMUSCULAR y futuros nombres del proveedor.
 - Si la recomendación se parte en varias líneas visuales, une todas esas líneas a la misma fila/examen hasta que empiece otro examen o una nueva sección. No pierdas palabras por saltos de línea.
 
-TIPO DE EXAMEN — REGLA ESPECIAL V10.3:
-- Si el PDF tiene un campo o valor explícito de tipo de examen/concepto (por ejemplo «EXAMEN DE SEGUIMIENTO CON RESTRICCIONES» o «CONTROL PERIÓDICO CON RECOMENDACIONES»), copia ese texto con la mayor fidelidad posible en tipo_examen; no lo reemplaces por una paráfrasis más corta.
-- Expresiones equivalentes de una misma familia no constituyen contradicción por sí solas: «seguimiento laboral», «seguimiento ocupacional», «control de seguimiento» y «examen de seguimiento con restricciones» pertenecen a SEGUIMIENTO; «control periódico con recomendaciones», «examen periódico» y «evaluación médica ocupacional periódica» pertenecen a PERIÓDICO; «preingreso/preocupacional» a INGRESO; «retiro» a EGRESO; «post incapacidad/reintegro/reincorporación» a POST INCAPACIDAD.
-- revision_requerida NO debe activarse únicamente porque el motor local y tu salida usen redacciones diferentes dentro de la misma familia semántica.
-- Sí debe existir revisión cuando las categorías sean materialmente distintas (por ejemplo INGRESO vs EGRESO, PERIÓDICO vs SEGUIMIENTO) y el PDF no permita resolver cuál es correcta.
+TIPO DE EXAMEN — REGLA ESPECIAL V10.16:
+- Clasifica tipo_examen EXCLUSIVAMENTE en una de estas etiquetas canónicas cuando exista evidencia en el PDF: «Ingreso», «Egreso», «Seguimiento laboral», «Periódico», «Post incapacidad» o «Cambio de cargo».
+- NO uses el concepto de aptitud como tipo de examen. Frases como «CUMPLE CON EL CARGO», «APTO PARA EL CARGO», «SIN RESTRICCIONES» o similares pertenecen al concepto de aptitud y jamás deben ir en tipo_examen ni en el encabezado de la carta.
+- «EXAMEN DE SEGUIMIENTO CON RESTRICCIONES», «seguimiento ocupacional» y «control de seguimiento» => «Seguimiento laboral».
+- «CONTROL PERIÓDICO CON RECOMENDACIONES», «examen periódico» y «evaluación médica ocupacional periódica» => «Periódico».
+- «preingreso/preocupacional» => «Ingreso»; «retiro» => «Egreso»; «reintegro/reincorporación/post incapacidad» => «Post incapacidad».
+- Si el documento enumera varios tipos en una leyenda general, NO tomes esa lista como el tipo del trabajador. Usa únicamente el campo/encabezado/concepto específico del certificado.
+- Si no puedes identificar una única categoría con evidencia suficiente, deja tipo_examen vacío y activa revision_requerida=true.
+- revision_requerida NO debe activarse únicamente porque el motor local y tu salida usen sinónimos de una misma familia.
 
 REGLAS ESTRICTAS:
 1. RECOMENDACIONES POR EXAMEN: en el formato B relaciona por misma fila/celda, encabezado inequívoco o prefijo «Examen: recomendación». En el formato A permite relación semántica FUERTE según las reglas anteriores. Incluye TODOS los exámenes realizados en recomendaciones_por_examen; si un examen no tiene recomendación sustentada usa lista vacía. Si su celda dice REALIZADO/NORMAL/NO APLICA/APTO, deja recomendaciones vacías y registra ese valor en estados_por_examen.
@@ -619,7 +624,7 @@ ${text}`;
         const auditPrompt = `AUDITORÍA FINAL ADVERSARIAL. Relee el PDF completo sin asumir que la primera extracción es correcta.
 
 Verifica obligatoriamente:
-- Tipo de examen: prioriza el valor explícito del PDF y no marques revisión por simples sinónimos de la misma categoría (p. ej. seguimiento laboral = examen de seguimiento con restricciones; periódico = control periódico con recomendaciones).
+- Tipo de examen: devuelve solo la categoría canónica Ingreso/Egreso/Seguimiento laboral/Periódico/Post incapacidad/Cambio de cargo. Nunca uses conceptos de aptitud como «cumple con el cargo». No marques revisión por simples sinónimos de la misma categoría.
 - Tabla examen/recomendación: relación por FILA, no por palabras internas.
 - Tres columnas médicas/ocupacionales/hábitos: conservar todo; asociar solo relaciones semánticas fuertes por examen y mantener generales las recomendaciones transversales.
 - «REALIZADO» es estado, no recomendación; consérvalo en estados_por_examen.
@@ -656,6 +661,26 @@ Devuelve el JSON COMPLETO corregido. Si algo no tiene evidencia visual, elimína
   const finalError = new Error(lastError || 'Gemini no devolvió una extracción utilizable.');
   finalError.retryable = /HTTP (408|429|500|502|503|504)|UNAVAILABLE|overwhelmed|temporar/i.test(lastError || '');
   throw finalError;
+}
+
+
+function deriveZoneFromPlace_(value) {
+  const raw = String(value || '').replace(/\s+/g,' ').trim();
+  if (!raw) return '';
+  const fold = function(v){ return String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase(); };
+  const n=fold(raw);
+  const known=[
+    ['PUERTO BOYACA','Puerto Boyacá'],['CHIQUINQUIRA','Chiquinquirá'],['VILLA DE LEYVA','Villa de Leyva'],
+    ['SOGAMOSO','Sogamoso'],['DUITAMA','Duitama'],['TUNJA','Tunja'],['GARAGOA','Garagoa'],['GUATEQUE','Guateque'],
+    ['MIRAFLORES','Miraflores'],['MONIQUIRA','Moniquirá'],['SOATA','Soatá']
+  ];
+  for (let i=0;i<known.length;i++) if (n.indexOf(known[i][0]) >= 0) return known[i][1];
+  let city=raw.replace(/\([^)]*(?:BOYAC[AÁ]|COLOMBIA)[^)]*\)/gi,' ')
+    .replace(/\b(?:BOYAC[AÁ]|COLOMBIA)\b/gi,' ')
+    .replace(/^\s*(?:CIUDAD|MUNICIPIO|LUGAR)\s*[:\-]?\s*/i,' ')
+    .split(/\s*[;,|]\s*|\s+[-–—]\s+/)[0].replace(/\s+/g,' ').trim();
+  if (!city || /^(BOYAC[AÁ]|COLOMBIA)$/i.test(city)) return '';
+  return city.toLowerCase().replace(/(^|[\s\-])([a-záéíóúñü])/g,function(_,a,b){return a+b.toUpperCase();});
 }
 
 function compactCell_(value, maxLen) {
@@ -702,7 +727,8 @@ function documentRecordRow_(item, user, createdAt) {
     String(item.syncState || 'SINCRONIZADO'),
     String((user && user.username) || ''),
     createdAt || new Date(),
-    new Date()
+    new Date(),
+    String(deriveZoneFromPlace_(data.lugar || '') || data.zona || '')
   ];
 }
 
@@ -726,6 +752,7 @@ function saveDocumentRecords_(user, payload) {
   try {
     const db = getDb_();
     const sheet = initializeSheet_(db, DOCUMENT_SHEET, DOCUMENT_HEADERS);
+    if (String(sheet.getRange(1,26).getDisplayValue() || '').trim().toLowerCase() !== 'zona') sheet.getRange(1,26).setValue('zona').setFontWeight('bold').setBackground('#dbeafe');
     const index = loadDocumentKeyIndex_(sheet);
     const appendRows = [];
     let updated = 0;
@@ -808,7 +835,7 @@ function backendDiagnostics_(user, payload) {
   return {
     ok:true,
     backendVersion:BACKEND_VERSION,
-    capabilities:['documentSync','sheetDiagnostics','batchConsecutives','twoSheetRouting','sstLogSync','correspondenceSync','geminiAudit','geminiFallback','geminiBackoff','geminiBatchModel','geminiProbe','email','emailMultiAttachment'],
+    capabilities:['documentSync','sheetDiagnostics','batchConsecutives','twoSheetRouting','sstLogSync','correspondenceSync','geminiAudit','geminiFallback','geminiBackoff','geminiBatchModel','geminiProbe','email','emailMultiAttachment','zoneBatchMail','autoZoneFromPlace','canonicalExamType'],
     portalDatabase:{ name:db.getName(), id:db.getId(), documentSheet:documentSheet.getName(), documentRows:Math.max(0,documentSheet.getLastRow()-1) },
     consecutive:consecutive,
     consecutiveData:consecutiveData,
@@ -1085,6 +1112,7 @@ function documentExternalValues_(item, user) {
     referrals:compactCell_(data.remisiones || ''),
     surveillance:compactCell_(data.vigilancia_programa || ''),
     location:String(data.lugar || ''),
+    zone:String(deriveZoneFromPlace_(data.lugar || '') || data.zona || ''),
     profile:String(profile || ''),
     quality:String(data.calidad_extraccion || ''),
     aiValidated:data.validado_ia === true || String(item.aiValidationStatus || '') === 'validated' ? 'SI' : 'NO',
@@ -1549,7 +1577,7 @@ function sendEmail_(user, payload) {
   const subject = String(payload.subject || '').trim(), body = String(payload.body || '').trim();
   const attachmentsInput = Array.isArray(payload.attachments) && payload.attachments.length ? payload.attachments : (payload.attachment ? [payload.attachment] : []);
   const fileNames = attachmentsInput.map(function(a){ return String(a && a.filename || ''); }).filter(Boolean);
-  const baseHistory = { date:new Date().toISOString(), sourceFile:String(payload.sourceFile||''), worker:String(payload.personName||''), to:to, cc:cc.join(', '), bcc:bcc.join(', '), subject:subject, file:fileNames.join(' | ') };
+  const baseHistory = { date:new Date().toISOString(), sourceFile:String(payload.sourceFile||''), worker:String(payload.personName||''), zone:String(payload.zone||''), to:to, cc:cc.join(', '), bcc:bcc.join(', '), subject:subject, file:fileNames.join(' | ') };
   try {
     if (!validEmail_(to)) throw new Error('El destinatario no es válido: ' + (to || '(vacío)'));
     if (!subject || !body) throw new Error('El asunto y el cuerpo del mensaje no pueden estar vacíos.');
