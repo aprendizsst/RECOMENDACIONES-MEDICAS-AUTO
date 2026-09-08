@@ -1567,6 +1567,40 @@
     toast('Zonas recalculadas',`${updated} actualizada(s) desde el lugar del PDF${unresolved?` · ${unresolved} sin lugar reconocible`:''}.`,unresolved?'warn':'success',7000);
   }
 
+  async function buildEmailAttachments(items, formats) {
+    const result = [];
+    for (let i=0; i<items.length; i++) {
+      const {doc} = items[i];
+      for (const format of formats) {
+        $('btnSendEmails').textContent = `Preparando ${i+1}/${items.length} · ${format}…`;
+        const generated = await SSTGenerator.generateForEmail(doc, format);
+        const output = generated.output;
+        result.push({ doc, output, size:Number(output.blob?.size || 0) });
+      }
+    }
+    return result;
+  }
+
+  function groupEmailAttachments(attachments, maxBytes) {
+    const groups=[]; let current=[], size=0;
+    for (const item of attachments) {
+      if (item.size > maxBytes) throw new Error(`${item.output.filename} supera el tamaño seguro permitido para correo.`);
+      if (current.length && size + item.size > maxBytes) { groups.push(current); current=[]; size=0; }
+      current.push(item); size += item.size;
+    }
+    if (current.length) groups.push(current);
+    return groups;
+  }
+
+  async function serializeAttachments(items) {
+    const out=[];
+    for (const item of items) {
+      const buffer=await item.output.blob.arrayBuffer();
+      out.push({filename:item.output.filename,mime:item.output.mime,base64:SSTUtils.arrayBufferToBase64(buffer)});
+    }
+    return out;
+  }
+
   function correspondenceRecord(doc, recipient, formats, attachments = []) {
     return {
       documentKey:String(doc?.hash || doc?.id || ''),

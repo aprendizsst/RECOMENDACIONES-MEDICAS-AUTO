@@ -1,7 +1,7 @@
 window.APP_CONFIG = Object.freeze({
   appName: "Portal SST · Recomendaciones Médicas",
   companyName: "JER S.A.",
-  version: "2026.09.07-github-pages-v10.16",
+  version: "2026.09.08-github-pages-v10.17",
   pipelineVersion: "2026-09-07.10.16-exam-type-auto-zone",
   aiValidationVersion: "2026-09-07.10.16-ai-exam-type-canonical",
   documentEngineVersion: "2026-09-07.10.16-exam-type-zone-output",
