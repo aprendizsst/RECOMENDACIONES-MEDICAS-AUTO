@@ -28,6 +28,23 @@ Se mantienen todas las funciones de V10.17: tipos de examen canónicos, zona aut
 Backend requerido: `2026.09.07-v10.16-exam-type-auto-zone`. No requiere cambios de Apps Script.
 
 
+
+## V10.22 · Firma y coordinador alineados a la izquierda
+
+- La firma insertada en la plantilla queda anclada al margen izquierdo del párrafo.
+- El nombre **VÍCTOR ALONSO MORENO CASAS** y el cargo **Coordinador SST** se fuerzan a alineación izquierda incluso si una plantilla cargada los tenía centrados.
+- La vista previa usa esa misma estructura DOCX y el PDF conserva la misma posición.
+- Se mantiene tamaño Carta, origen fijo de página y todas las mejoras funcionales anteriores.
+
+## V10.21 · Corrección de posición del logo en PDF
+
+- Mantiene PDF en tamaño Carta (8.5 × 11 in).
+- Conserva exactamente el origen y las coordenadas de cada página renderizada desde Word.
+- Elimina el recorte/recentrado por contenido de V10.20 que podía desplazar el logo institucional.
+- La vista previa y el PDF usan la misma SECTION de `docx-preview`, sin modificar la posición horizontal de imágenes, encabezados o tablas.
+- Invalida la caché documental para regenerar los PDF con el motor corregido.
+- No modifica IA, parser clínico, zonas, correo, consecutivos, Apps Script ni generación Word.
+
 ## V10.20 · PDF Carta fiel a la plantilla
 
 - PDF fijo en tamaño Carta (8.5 × 11 pulgadas).

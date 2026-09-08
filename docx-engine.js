@@ -32,6 +32,20 @@
     return paragraph;
   }
 
+  function setParagraphAlignment(doc, paragraph, alignment = 'left') {
+    if (!paragraph) return paragraph;
+    let pPr = [...paragraph.childNodes].find((n) => n.nodeType === 1 && n.namespaceURI === WNS && n.localName === 'pPr');
+    if (!pPr) {
+      pPr = doc.createElementNS(WNS, 'w:pPr');
+      paragraph.insertBefore(pPr, paragraph.firstChild);
+    }
+    [...pPr.childNodes].filter((n) => n.nodeType === 1 && n.namespaceURI === WNS && n.localName === 'jc').forEach((n) => pPr.removeChild(n));
+    const jc = doc.createElementNS(WNS, 'w:jc');
+    jc.setAttributeNS(WNS, 'w:val', alignment);
+    pPr.appendChild(jc);
+    return paragraph;
+  }
+
   function cloneParagraph(doc, source, text, opts = {}) {
     const clone = source.cloneNode(true);
     setPText(doc, clone, text, opts);
@@ -143,7 +157,7 @@
 
   class DocxEngine {
     constructor() {
-      this.engineVersion = '2026-09-08.10.20-letter-faithful-pdf';
+      this.engineVersion = '2026-09-08.10.22-letter-left-signature-pdf';
       this.criticalMarkers = [
         '{{NUMERO DE CONSECUTIVO}}',
         '{{NOMBRE DE LA PERSONA}}',
@@ -269,7 +283,7 @@
     }
 
     async toPdf(docxBuffer) {
-      // V10.20: PDF institucional en tamaño CARTA (8.5 × 11 in).
+      // V10.22: PDF institucional Carta con origen fijo de página y bloque de firma alineado a la izquierda.
       // La plantilla base ya está configurada en Carta. El PDF usa exactamente
       // la misma página producida por docx-preview y NO vuelve a paginar texto.
       // Cada SECTION renderizada equivale a una página del PDF.
@@ -313,67 +327,13 @@
         }));
       };
 
-      // Normaliza únicamente el lienzo de captura. No recorta contenido clínico:
-      // cuando docx-preview deja un wrapper lateral extra, se elimina solo la franja
-      // blanca exterior hasta recuperar la relación física de una hoja Carta.
-      const normalizeLetterCanvas = (source) => {
+      // V10.21: NO se recorta ni se recentra la página según los píxeles de contenido.
+      // Ese procedimiento podía desplazar horizontalmente elementos asimétricos del
+      // encabezado (especialmente el logo institucional). La SECTION de docx-preview
+      // ya representa la hoja Word completa; se conserva su origen (0,0), su ancho y
+      // su alto exactos y jsPDF únicamente la escala a Carta sin alterar coordenadas.
+      const preservePageCanvas = (source) => {
         if (!source?.width || !source?.height) return source;
-        const sourceRatio = source.width / source.height;
-        const targetWidthFromHeight = Math.round(source.height * LETTER_RATIO);
-
-        // Caso esperado: la captura quedó más ancha que una hoja Carta por el wrapper.
-        if (sourceRatio > LETTER_RATIO * 1.015 && targetWidthFromHeight < source.width) {
-          const ctx = source.getContext('2d', { willReadFrequently:true });
-          let minX = source.width, maxX = -1;
-          try {
-            const step = Math.max(2, Math.round(source.width / 900));
-            const pixels = ctx.getImageData(0, 0, source.width, source.height).data;
-            for (let y = 0; y < source.height; y += step) {
-              for (let x = 0; x < source.width; x += step) {
-                const i = (y * source.width + x) * 4;
-                const a = pixels[i + 3];
-                const r = pixels[i], g = pixels[i + 1], b = pixels[i + 2];
-                // Detecta trazos/texto/bordes y evita considerar como contenido el blanco.
-                if (a > 20 && (r < 245 || g < 245 || b < 245)) {
-                  if (x < minX) minX = x;
-                  if (x > maxX) maxX = x;
-                }
-              }
-            }
-          } catch (_) {
-            // Si un navegador impide leer píxeles del canvas, se conserva un
-            // recorte geométrico centrado; la generación PDF no debe bloquearse.
-          }
-
-          const contentCenter = maxX >= minX ? (minX + maxX) / 2 : source.width / 2;
-          let sx = Math.round(contentCenter - targetWidthFromHeight / 2);
-          sx = Math.max(0, Math.min(source.width - targetWidthFromHeight, sx));
-
-          const normalized = document.createElement('canvas');
-          normalized.width = targetWidthFromHeight;
-          normalized.height = source.height;
-          const nctx = normalized.getContext('2d');
-          nctx.fillStyle = '#ffffff';
-          nctx.fillRect(0, 0, normalized.width, normalized.height);
-          nctx.drawImage(source, sx, 0, targetWidthFromHeight, source.height, 0, 0, normalized.width, normalized.height);
-          return normalized;
-        }
-
-        // Si el lienzo resultó apenas más estrecho, se rellena con blanco en vez de
-        // recortar verticalmente, para no perder encabezados, firmas ni pie de página.
-        if (sourceRatio < LETTER_RATIO * 0.985) {
-          const targetWidth = Math.round(source.height * LETTER_RATIO);
-          const normalized = document.createElement('canvas');
-          normalized.width = targetWidth;
-          normalized.height = source.height;
-          const nctx = normalized.getContext('2d');
-          nctx.fillStyle = '#ffffff';
-          nctx.fillRect(0, 0, normalized.width, normalized.height);
-          const dx = Math.round((targetWidth - source.width) / 2);
-          nctx.drawImage(source, dx, 0);
-          return normalized;
-        }
-
         return source;
       };
 
@@ -418,7 +378,7 @@
             throw new Error(`La página ${index + 1} quedó vacía durante el renderizado.`);
           }
 
-          const canvas = normalizeLetterCanvas(rawCanvas);
+          const canvas = preservePageCanvas(rawCanvas);
           if (index > 0) pdf.addPage('letter', 'portrait');
 
           // La imagen ya contiene los márgenes propios de Word. Se coloca a sangre
@@ -563,8 +523,29 @@
         zip.file(partName, serializeXml(partDoc));
       }
 
+      // V10.22: el bloque de firma debe conservarse alineado al margen izquierdo
+      // tanto en Word como en docx-preview; el PDF hereda exactamente esta posición.
+      await this._alignCoordinatorBlockLeft(zip);
       if (signatureAsset?.blob) await this._insertSignature(zip, signatureAsset.blob);
       return zip.generateAsync({ type: 'arraybuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
+    }
+
+    async _alignCoordinatorBlockLeft(zip) {
+      const docPath = 'word/document.xml';
+      const file = zip.file(docPath);
+      if (!file) return;
+      const wordDoc = parseXml(await file.async('string'));
+      const normalize = (value) => String(value || '')
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase().replace(/\s+/g, ' ').trim();
+      const paragraphs = [...wordDoc.getElementsByTagNameNS(WNS, 'p')];
+      for (const paragraph of paragraphs) {
+        const value = normalize(pText(paragraph));
+        if (value.includes('VICTOR ALONSO MORENO CASAS') || /\bCOORDINADOR\s+SST\b/.test(value)) {
+          setParagraphAlignment(wordDoc, paragraph, 'left');
+        }
+      }
+      zip.file(docPath, serializeXml(wordDoc));
     }
 
     async _insertSignature(zip, blob) {
@@ -604,7 +585,7 @@
       const target = paragraphs.find((p) => pText(p).toUpperCase().includes('VÍCTOR ALONSO MORENO CASAS')) || paragraphs.find((p) => pText(p).toUpperCase().includes('VICTOR ALONSO MORENO CASAS'));
       if (!target || !target.parentNode) return;
 
-      const drawingXml = `<w:p xmlns:w="${WNS}" xmlns:r="${RNS}" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${widthEmu}" cy="${heightEmu}"/><wp:docPr id="987" name="Firma SST"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="${mediaName}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${relId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${widthEmu}" cy="${heightEmu}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
+      const drawingXml = `<w:p xmlns:w="${WNS}" xmlns:r="${RNS}" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:pPr><w:jc w:val="left"/></w:pPr><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${widthEmu}" cy="${heightEmu}"/><wp:docPr id="987" name="Firma SST"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="${mediaName}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${relId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${widthEmu}" cy="${heightEmu}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
       const fragDoc = parseXml(drawingXml);
       const node = wordDoc.importNode(fragDoc.documentElement, true);
       target.parentNode.insertBefore(node, target);
