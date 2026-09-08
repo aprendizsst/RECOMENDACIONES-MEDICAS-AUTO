@@ -178,3 +178,70 @@ input:focus,textarea:focus,select:focus{border-color:#a78bfa;box-shadow:0 0 0 3p
 .email-preview-card.zone>strong{color:#e9d5ff}.email-preview-card.zone>p{margin:8px 0 0;color:var(--text-muted,#ad9abe);font-size:.76rem}
 select#emailZoneFilter{width:100%}
 @media(max-width:780px){.zone-toolbar{grid-template-columns:1fr}.zone-assign-row{grid-template-columns:1fr}.zone-assign-row .btn{width:100%}}
+
+
+/* V10.18 · Morado con mayor contraste cromático
+   El violeta conserva la identidad principal; superficies y estados usan neutros,
+   azul, verde y ámbar para evitar una interfaz monocromática. */
+:root{
+  --bg:#090d16;--bg-2:#0d1320;--panel:#121927;--panel-2:#172131;--panel-3:#1d2a3c;
+  --line:#2b3a50;--line-soft:#202d40;--text:#f5f7fb;--muted:#a4b0c1;--muted-2:#7f8da1;
+  --blue:#8b5cf6;--blue-2:#6d28d9;--cyan:#38bdf8;--green:#34d399;--amber:#f6c453;--red:#fb7185;
+}
+html{background:var(--bg);scrollbar-color:#5b3f79 #0a0f18}
+body{background:
+  radial-gradient(circle at 82% -8%,rgba(139,92,246,.17),transparent 31%),
+  radial-gradient(circle at 8% 32%,rgba(56,189,248,.055),transparent 28%),
+  linear-gradient(180deg,#090d16 0%,#0c111b 48%,#080c14 100%)}
+
+/* Navegación: morado como identidad, contenidos en neutro azulado */
+.sidebar{background:linear-gradient(180deg,#131020 0%,#0d111b 58%,#090d15 100%);border-right-color:#282f42}
+.topbar{background:rgba(9,13,22,.92);border-bottom-color:rgba(43,58,80,.88)}
+.nav-item{color:#a8b1c0}.nav-item>span{background:#161b29;border-color:#2b3549;color:#c4b5fd}.nav-item small{color:#768398}
+.nav-item:hover{background:#171d2a;border-color:#303a4f}.nav-item.active{background:linear-gradient(90deg,rgba(124,58,237,.28),rgba(124,58,237,.055));border-color:#5b4276;box-shadow:inset 3px 0 0 #c4b5fd}
+.connection-card{background:#121927;border-color:#29364a}
+
+/* Paneles: menos morado, mayor separación entre niveles */
+.panel{border-color:#2c394d;background:linear-gradient(160deg,rgba(20,28,42,.98),rgba(13,19,30,.97));box-shadow:0 15px 38px rgba(0,0,0,.18)}
+.quality-stack>div,.recommendation-card,.recipient-row,.switch-row{background:#0f1622;border-color:#28364a}
+.empty-state{background:#0e1520;border-color:#2c3a4e;color:#8d9aab}.empty-state strong{color:#dce3ec}
+.search-box{background:#0d1420;border-color:#2d3a4e}.document-item{background:#0f1622}.document-item:hover{background:#151e2d;border-color:#33445b}.document-item.active{background:linear-gradient(90deg,rgba(91,46,145,.28),#131b28);border-color:#60457c}
+.editor-head{border-bottom-color:#2b384b}.editor-section{border-top-color:#293548}.editor-status{background:#151c29;border-color:#35445a;color:#bdc8d6}
+
+/* Inicio: mezcla violeta + azul, métricas diferenciadas por significado */
+.hero-panel{border-color:#39445a;background:
+  radial-gradient(circle at 80% 27%,rgba(139,92,246,.20),transparent 28%),
+  radial-gradient(circle at 56% 110%,rgba(56,189,248,.075),transparent 34%),
+  linear-gradient(135deg,#171a2a 0%,#111722 62%,#171225 100%)}
+.hero-panel p{color:#b8c2d0}.orbit{background:#171d2a;border-color:#3c465a;color:#d9d5e8}
+.metric-card{border-color:#2b384c;background:linear-gradient(145deg,#151d2b,#101721)}
+.metric-card:hover{border-color:#465772}
+.metric-card small{color:#aab5c4}.metric-card em{color:#7f8c9f}
+.metric-card:nth-child(1) .metric-icon{background:linear-gradient(145deg,#263c63,#172942);border-color:#35527d;color:#8ec5ff}
+.metric-card:nth-child(2) .metric-icon{background:linear-gradient(145deg,#164536,#102e27);border-color:#28634f;color:#78e3b8}
+.metric-card:nth-child(3) .metric-icon{background:linear-gradient(145deg,#4a2d6f,#2d2045);border-color:#674891;color:#dcc8ff}
+.metric-card:nth-child(4) .metric-icon{background:linear-gradient(145deg,#5a4320,#362a19);border-color:#7a5e2c;color:#ffd980}
+
+/* Carga y procesamiento */
+.drop-zone{border-color:#43536b;background:linear-gradient(145deg,rgba(91,46,145,.09),rgba(15,22,34,.82))}.drop-zone:hover,.drop-zone.dragover{border-color:#9f7aea;background:#151d2a}
+.drop-icon{background:#28213a;color:#d7c7fb;border-color:#574271}
+.processing-banner{border-color:#36506a;background:linear-gradient(90deg,#142337,#141b29);box-shadow:inset 3px 0 0 #38bdf8}
+.count-badge{background:#202b3c;color:#cdd7e4;border-color:#35475e}
+.batch-insight-strip>div{background:linear-gradient(145deg,#161f2e,#101722);border-color:#2d3c51}.batch-insight-strip small{color:#8997aa}.batch-insight-strip strong{color:#e5eaf0}.batch-insight-strip .wide strong{color:#c4b5fd}
+
+/* Visores: fondo gris azulado para que la hoja blanca destaque */
+.viewer-toolbar{background:#101722;border-bottom-color:#29374a}.viewer-toolbar small,.viewer-toolbar #originalPageLabel{color:#9aa8ba}
+.pdf-stage,.generated-preview{background:linear-gradient(180deg,#0b111b,#111a27)}
+
+/* Correo y zonas: superficies neutras, morado solo en selección */
+.email-option-block,.email-common-recipient,.email-preview-card.common{background:#111925;border-color:#2f4055}
+.recipient-row:hover{background:#162131;border-color:#3b506a}.recipient-file-format{background:#1a2433;border-color:#3b4d63;color:#d6dfeb}
+.email-preview-card{background:#101722;border-color:#2c3a4e}.confirm-check{background:#131c29;border-color:#334359}
+.email-zone-tools{border-color:rgba(139,92,246,.30);background:linear-gradient(145deg,rgba(91,46,145,.10),rgba(14,21,32,.86))}
+.zone-recipient-card{background:#111a27;border-color:#2d3c51}.email-preview-card.zone{border-color:rgba(139,92,246,.34);background:linear-gradient(150deg,rgba(91,46,145,.13),#101722)}
+
+/* Configuración y modales */
+.data-table th{background:#101722;color:#b6c1cf;border-bottom-color:#34455b}.data-table td{color:#cbd4df;border-bottom-color:#243247}.data-table tr:hover td{background:#151f2e}
+.upload-card{background:#111925;border-color:#394b62;color:#edf1f6}.upload-card:hover{background:#172231;border-color:#8b5cf6}.upload-card>span{background:linear-gradient(145deg,#3e2b59,#292038);color:#ddcefa}
+.modal-card{background:#111925;border-color:#34445a}.modal-head,.modal-actions{border-color:#28374a}.modal-close{background:#1b2534;border-color:#3b4d64}.modal-close:hover{background:#243246}
+.toast{background:#131c29;border-color:#34455a;color:#f0f3f7}.toast small{color:#9aa8b9}

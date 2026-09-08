@@ -117,7 +117,7 @@
       body.format = format;
       body.templateHash = assets.template?.hash || 'default-template-v1';
       body.signatureHash = assets.signature?.hash || '';
-      body.documentEngineVersion = SSTDocx.engineVersion || 'template-engine-v10';
+      body.documentEngineVersion = SSTDocx.engineVersion || 'template-engine-v10.18';
       return SSTUtils.sha256Text(JSON.stringify(body));
     }
 
@@ -281,7 +281,7 @@
         templateName:assets.template?.name || 'Plantilla base incluida',
         templateHash:assets.template?.hash || 'default-template-v1',
         templateValidation:prepared.validation,
-        documentEngineVersion:SSTDocx.engineVersion || 'template-engine-v10'
+        documentEngineVersion:SSTDocx.engineVersion || 'template-engine-v10.18'
       };
       if (persist) await SSTDB.put(SSTDB.stores.outputs, output);
       return { output, reused:false };

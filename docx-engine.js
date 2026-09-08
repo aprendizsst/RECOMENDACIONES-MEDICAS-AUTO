@@ -143,7 +143,7 @@
 
   class DocxEngine {
     constructor() {
-      this.engineVersion = '2026-09-07.10.16-exam-type-zone-output';
+      this.engineVersion = '2026-09-08.10.18-preview-faithful-pdf';
       this.criticalMarkers = [
         '{{NUMERO DE CONSECUTIVO}}',
         '{{NOMBRE DE LA PERSONA}}',
@@ -255,28 +255,97 @@
     }
 
     async toPdf(docxBuffer) {
+      // V10.18: el PDF se construye página por página a partir del MISMO render
+      // de docx-preview que usa la vista previa. Así se evita que html2pdf vuelva
+      // a paginar el documento y corte bloques, omita páginas o cambie los saltos.
       await this.ensurePreviewRenderer();
-      const html2pdf = await this.ensureHtml2Pdf();
+      await this.ensureHtml2Pdf(); // El bundle expone html2canvas + jsPDF.
+
+      const html2canvas = window.html2canvas;
+      const jsPDF = window.jspdf?.jsPDF || window.jsPDF;
+      if (typeof html2canvas !== 'function' || !jsPDF) {
+        throw new Error('No fue posible cargar el renderizador PDF completo (html2canvas/jsPDF).');
+      }
+
       const host = document.createElement('div');
-      host.setAttribute('aria-hidden','true');
-      Object.assign(host.style, { position:'fixed', left:'-100000px', top:'0', width:'816px', background:'#fff', zIndex:'-9999', pointerEvents:'none' });
+      host.setAttribute('aria-hidden', 'true');
+      Object.assign(host.style, {
+        position:'fixed', left:'-100000px', top:'0', width:'1100px',
+        background:'#e9eef5', zIndex:'-9999', pointerEvents:'none',
+        overflow:'visible'
+      });
       const styles = document.createElement('div');
       const body = document.createElement('div');
-      host.appendChild(styles); host.appendChild(body); document.body.appendChild(host);
+      host.appendChild(styles);
+      host.appendChild(body);
+      document.body.appendChild(host);
+
+      const waitForImages = async (scope) => {
+        const images = [...scope.querySelectorAll('img')];
+        await Promise.all(images.map((img) => {
+          if (img.complete) return Promise.resolve();
+          return new Promise((resolve) => {
+            const done = () => resolve();
+            img.addEventListener('load', done, { once:true });
+            img.addEventListener('error', done, { once:true });
+          });
+        }));
+      };
+
       try {
         await this.renderGeneratedDocx(docxBuffer, body, styles);
-        await new Promise((resolve) => setTimeout(resolve, 180));
-        const worker = html2pdf().set({
-          margin:0,
-          image:{type:'jpeg',quality:0.98},
-          html2canvas:{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'},
-          jsPDF:{unit:'mm',format:'a4',orientation:'portrait'},
-          pagebreak:{mode:['css','legacy']}
-        }).from(body).toPdf();
-        const blob = await worker.outputPdf('blob');
+        if (document.fonts?.ready) {
+          try { await document.fonts.ready; } catch (_) {}
+        }
+        await waitForImages(body);
+        // Dos frames garantizan que docx-preview termine tamaños, saltos y cabeceras.
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+        let pages = [...body.querySelectorAll('.sst-docx-wrapper > section.sst-docx')];
+        if (!pages.length) pages = [...body.querySelectorAll('section.sst-docx')];
+        if (!pages.length) pages = [...body.querySelectorAll('.sst-docx')].filter((el) => el.tagName === 'SECTION');
+        if (!pages.length) throw new Error('La vista previa no produjo páginas renderizables.');
+
+        const pdf = new jsPDF({ unit:'mm', format:'a4', orientation:'portrait', compress:true });
+        const pageW = 210;
+        const pageH = 297;
+
+        for (let index = 0; index < pages.length; index++) {
+          const page = pages[index];
+          // No se usan reglas automáticas de page-break: cada SECTION ya es una página
+          // real de la vista previa DOCX.
+          const canvas = await html2canvas(page, {
+            scale: 2,
+            useCORS: true,
+            allowTaint: false,
+            logging: false,
+            backgroundColor: '#ffffff',
+            scrollX: 0,
+            scrollY: 0,
+            windowWidth: Math.max(host.scrollWidth, page.scrollWidth, 1100),
+            windowHeight: Math.max(page.scrollHeight, 1200)
+          });
+          if (!canvas.width || !canvas.height) throw new Error(`La página ${index + 1} quedó vacía durante el renderizado.`);
+
+          if (index > 0) pdf.addPage('a4', 'portrait');
+
+          // Ajuste proporcional: nunca se recorta. Si la plantilla tiene una relación
+          // ligeramente distinta a A4, se centra dejando margen blanco mínimo.
+          const ratio = Math.min(pageW / canvas.width, pageH / canvas.height);
+          const drawW = canvas.width * ratio;
+          const drawH = canvas.height * ratio;
+          const x = (pageW - drawW) / 2;
+          const y = (pageH - drawH) / 2;
+          const imageData = canvas.toDataURL('image/jpeg', 0.96);
+          pdf.addImage(imageData, 'JPEG', x, y, drawW, drawH, undefined, 'FAST');
+        }
+
+        const blob = pdf.output('blob');
         if (!blob || !blob.size) throw new Error('El conversor devolvió un PDF vacío.');
         return blob;
-      } finally { host.remove(); }
+      } finally {
+        host.remove();
+      }
     }
 
     async loadDefaultTemplate() {
