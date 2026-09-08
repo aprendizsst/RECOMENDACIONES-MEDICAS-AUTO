@@ -1,5 +1,14 @@
 # Portal SST · Recomendaciones Médicas V10.19
 
+## V10.23 · PDF idéntico a la vista previa, sin estirar
+
+- El PDF reutiliza el mismo HTML ya generado para la vista previa; no vuelve a renderizar la plantilla en un contenedor de ancho diferente.
+- Corrige el desplazamiento del logo causado por diferencias entre el render oculto y la vista previa.
+- La captura se inserta en hoja Carta conservando siempre su relación de aspecto; no se estira texto ni encabezado.
+- Se usa PNG para conservar mejor la nitidez de letras, líneas, logo y firma.
+- Se conserva la alineación izquierda de firma, nombre y cargo del coordinador.
+- No cambia parser, IA, zonas, correo, consecutivos ni backend.
+
 V10.19 conserva íntegramente V10.17 y añade dos mejoras de presentación sin modificar el pipeline clínico, IA, zonas, correo ni Apps Script.
 
 ## PDF fiel a la vista previa

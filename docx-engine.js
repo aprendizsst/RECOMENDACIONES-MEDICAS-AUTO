@@ -157,7 +157,7 @@
 
   class DocxEngine {
     constructor() {
-      this.engineVersion = '2026-09-08.10.22-letter-left-signature-pdf';
+      this.engineVersion = '2026-09-08.10.23-preview-source-letter-pdf';
       this.criticalMarkers = [
         '{{NUMERO DE CONSECUTIVO}}',
         '{{NOMBRE DE LA PERSONA}}',
@@ -282,12 +282,11 @@
       return `<!doctype html><html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">${styles.innerHTML}<style>html,body{margin:0;background:#e9eef5}body{padding:20px}.sst-docx-wrapper{margin:auto}</style></head><body>${body.innerHTML}</body></html>`;
     }
 
-    async toPdf(docxBuffer) {
-      // V10.22: PDF institucional Carta con origen fijo de página y bloque de firma alineado a la izquierda.
-      // La plantilla base ya está configurada en Carta. El PDF usa exactamente
-      // la misma página producida por docx-preview y NO vuelve a paginar texto.
-      // Cada SECTION renderizada equivale a una página del PDF.
-      await this.ensurePreviewRenderer();
+    async toPdf(docxBuffer, previewHtml = null) {
+      // V10.23: el PDF usa EXACTAMENTE el mismo HTML que se entrega a la vista previa.
+      // No se vuelve a renderizar el DOCX dentro de un contenedor de ancho forzado,
+      // porque eso podía modificar el ancho de tablas, desplazar el logo y deformar texto.
+      // La captura conserva su relación de aspecto y únicamente se ajusta dentro de Carta.
       const html2canvas = await this.ensureHtml2Canvas();
       const jsPDF = await this.ensureJsPdf();
       if (typeof html2canvas !== 'function' || !jsPDF) {
@@ -296,24 +295,33 @@
 
       const LETTER_W_MM = 215.9;
       const LETTER_H_MM = 279.4;
-      const LETTER_RATIO = 8.5 / 11;
+      const LETTER_RATIO = LETTER_W_MM / LETTER_H_MM;
+      const html = previewHtml || await this.toHtml(docxBuffer);
 
-      const host = document.createElement('div');
-      host.setAttribute('aria-hidden', 'true');
-      Object.assign(host.style, {
-        position:'fixed', left:'-100000px', top:'0',
-        // 816 px = 8.5 in a 96 dpi. El ancho Carta evita que el wrapper oculto
-        // ensanche artificialmente la SECTION durante la captura.
-        width:'816px', minWidth:'816px', maxWidth:'816px',
-        background:'#ffffff', zIndex:'-9999', pointerEvents:'none',
-        overflow:'visible', margin:'0', padding:'0'
+      // Se monta el MISMO HTML de la vista previa en un iframe fuera de pantalla.
+      // Un viewport holgado evita que el layout institucional se comprima por el ancho
+      // de un contenedor auxiliar. srcdoc mantiene el documento aislado y reproducible.
+      const frame = document.createElement('iframe');
+      frame.setAttribute('aria-hidden', 'true');
+      frame.setAttribute('tabindex', '-1');
+      Object.assign(frame.style, {
+        position:'fixed',
+        left:'-12000px',
+        top:'0',
+        width:'1400px',
+        height:'1800px',
+        border:'0',
+        background:'#ffffff',
+        pointerEvents:'none',
+        zIndex:'-9999'
       });
-      const styles = document.createElement('div');
-      const body = document.createElement('div');
-      Object.assign(body.style, { width:'816px', margin:'0', padding:'0' });
-      host.appendChild(styles);
-      host.appendChild(body);
-      document.body.appendChild(host);
+      document.body.appendChild(frame);
+
+      const waitForFrameLoad = () => new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('Tiempo agotado preparando la vista previa para PDF.')), 20000);
+        frame.addEventListener('load', () => { clearTimeout(timer); resolve(); }, { once:true });
+        frame.srcdoc = html;
+      });
 
       const waitForImages = async (scope) => {
         const images = [...scope.querySelectorAll('img')];
@@ -327,28 +335,21 @@
         }));
       };
 
-      // V10.21: NO se recorta ni se recentra la página según los píxeles de contenido.
-      // Ese procedimiento podía desplazar horizontalmente elementos asimétricos del
-      // encabezado (especialmente el logo institucional). La SECTION de docx-preview
-      // ya representa la hoja Word completa; se conserva su origen (0,0), su ancho y
-      // su alto exactos y jsPDF únicamente la escala a Carta sin alterar coordenadas.
-      const preservePageCanvas = (source) => {
-        if (!source?.width || !source?.height) return source;
-        return source;
-      };
-
       try {
-        await this.renderGeneratedDocx(docxBuffer, body, styles);
-        if (document.fonts?.ready) {
-          try { await document.fonts.ready; } catch (_) {}
-        }
-        await waitForImages(body);
-        // Espera dos frames para que docx-preview cierre medidas, saltos y cabeceras.
-        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        await waitForFrameLoad();
+        const frameDoc = frame.contentDocument;
+        const frameWin = frame.contentWindow;
+        if (!frameDoc || !frameWin) throw new Error('No fue posible abrir la vista previa interna para PDF.');
 
-        let pages = [...body.querySelectorAll('.sst-docx-wrapper > section.sst-docx')];
-        if (!pages.length) pages = [...body.querySelectorAll('section.sst-docx')];
-        if (!pages.length) pages = [...body.querySelectorAll('.sst-docx')].filter((el) => el.tagName === 'SECTION');
+        if (frameDoc.fonts?.ready) {
+          try { await frameDoc.fonts.ready; } catch (_) {}
+        }
+        await waitForImages(frameDoc);
+        await new Promise((resolve) => frameWin.requestAnimationFrame(() => frameWin.requestAnimationFrame(resolve)));
+
+        let pages = [...frameDoc.querySelectorAll('.sst-docx-wrapper > section.sst-docx')];
+        if (!pages.length) pages = [...frameDoc.querySelectorAll('section.sst-docx')];
+        if (!pages.length) pages = [...frameDoc.querySelectorAll('.sst-docx')].filter((el) => el.tagName === 'SECTION');
         if (!pages.length) throw new Error('La vista previa no produjo páginas renderizables.');
 
         const pdf = new jsPDF({ unit:'mm', format:'letter', orientation:'portrait', compress:true });
@@ -356,13 +357,11 @@
         for (let index = 0; index < pages.length; index++) {
           const page = pages[index];
           const rect = page.getBoundingClientRect();
-          const captureWidth = Math.max(1, Math.ceil(rect.width || page.offsetWidth || 816));
-          const captureHeight = Math.max(1, Math.ceil(rect.height || page.offsetHeight || 1056));
+          const captureWidth = Math.max(1, Math.ceil(rect.width || page.offsetWidth || page.scrollWidth));
+          const captureHeight = Math.max(1, Math.ceil(rect.height || page.offsetHeight || page.scrollHeight));
 
-          // 2.4x mejora notablemente texto, logos y firma sin disparar tanto el peso
-          // como PNG de alta resolución en lotes grandes.
-          const rawCanvas = await html2canvas(page, {
-            scale: 2.4,
+          const canvas = await html2canvas(page, {
+            scale: 2.35,
             useCORS: true,
             allowTaint: false,
             logging: false,
@@ -371,27 +370,39 @@
             scrollY: 0,
             width: captureWidth,
             height: captureHeight,
-            windowWidth: 816,
-            windowHeight: Math.max(captureHeight, 1056)
+            windowWidth: Math.max(1200, Math.ceil(frameDoc.documentElement.scrollWidth || 1400)),
+            windowHeight: Math.max(1500, Math.ceil(frameDoc.documentElement.scrollHeight || captureHeight))
           });
-          if (!rawCanvas.width || !rawCanvas.height) {
+          if (!canvas.width || !canvas.height) {
             throw new Error(`La página ${index + 1} quedó vacía durante el renderizado.`);
           }
 
-          const canvas = preservePageCanvas(rawCanvas);
           if (index > 0) pdf.addPage('letter', 'portrait');
 
-          // La imagen ya contiene los márgenes propios de Word. Se coloca a sangre
-          // sobre la hoja Carta para no agregar un segundo juego de márgenes blancos.
-          const imageData = canvas.toDataURL('image/jpeg', 0.985);
-          pdf.addImage(imageData, 'JPEG', 0, 0, LETTER_W_MM, LETTER_H_MM, undefined, 'FAST');
+          // Nunca se estira la captura para llenar Carta. Se conserva la proporción
+          // exacta de la vista previa y se ancla en (0,0). Si existe una diferencia
+          // mínima de relación de aspecto, queda únicamente una franja blanca residual.
+          const sourceRatio = canvas.width / canvas.height;
+          let drawW;
+          let drawH;
+          if (sourceRatio >= LETTER_RATIO) {
+            drawW = LETTER_W_MM;
+            drawH = drawW / sourceRatio;
+          } else {
+            drawH = LETTER_H_MM;
+            drawW = drawH * sourceRatio;
+          }
+
+          // PNG evita artefactos JPEG alrededor de letras, bordes y del logo corporativo.
+          const imageData = canvas.toDataURL('image/png');
+          pdf.addImage(imageData, 'PNG', 0, 0, drawW, drawH, undefined, 'FAST');
         }
 
         const blob = pdf.output('blob');
         if (!blob || !blob.size) throw new Error('El conversor devolvió un PDF vacío.');
         return blob;
       } finally {
-        host.remove();
+        frame.remove();
       }
     }
 

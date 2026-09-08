@@ -1,5 +1,14 @@
 # Despliegue V10.19
 
+## V10.23 · PDF idéntico a la vista previa, sin estirar
+
+- El PDF reutiliza el mismo HTML ya generado para la vista previa; no vuelve a renderizar la plantilla en un contenedor de ancho diferente.
+- Corrige el desplazamiento del logo causado por diferencias entre el render oculto y la vista previa.
+- La captura se inserta en hoja Carta conservando siempre su relación de aspecto; no se estira texto ni encabezado.
+- Se usa PNG para conservar mejor la nitidez de letras, líneas, logo y firma.
+- Se conserva la alineación izquierda de firma, nombre y cargo del coordinador.
+- No cambia parser, IA, zonas, correo, consecutivos ni backend.
+
 1. Reemplaza en GitHub los archivos del portal con el contenido de esta carpeta.
 2. **No es necesario volver a desplegar Apps Script** si ya reporta `2026.09.07-v10.16-exam-type-auto-zone`.
 3. Espera a que GitHub Pages publique la nueva versión.

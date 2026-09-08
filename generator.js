@@ -117,7 +117,7 @@
       body.format = format;
       body.templateHash = assets.template?.hash || 'default-template-v1';
       body.signatureHash = assets.signature?.hash || '';
-      body.documentEngineVersion = SSTDocx.engineVersion || 'template-engine-v10.22';
+      body.documentEngineVersion = SSTDocx.engineVersion || 'template-engine-v10.23';
       return SSTUtils.sha256Text(JSON.stringify(body));
     }
 
@@ -260,7 +260,7 @@
         mime = 'text/html'; ext = 'html';
       } else {
         try {
-          blob = await SSTDocx.toPdf(docxBuffer);
+          blob = await SSTDocx.toPdf(docxBuffer, previewHtml);
         } catch (error) {
           throw new Error(`No fue posible convertir la plantilla Word a PDF: ${error.message}. Puedes generar Word mientras se corrige el renderizador.`);
         }
@@ -281,7 +281,7 @@
         templateName:assets.template?.name || 'Plantilla base incluida',
         templateHash:assets.template?.hash || 'default-template-v1',
         templateValidation:prepared.validation,
-        documentEngineVersion:SSTDocx.engineVersion || 'template-engine-v10.22'
+        documentEngineVersion:SSTDocx.engineVersion || 'template-engine-v10.23'
       };
       if (persist) await SSTDB.put(SSTDB.stores.outputs, output);
       return { output, reused:false };
