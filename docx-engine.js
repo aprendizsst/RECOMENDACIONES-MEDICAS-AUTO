@@ -157,7 +157,7 @@
 
   class DocxEngine {
     constructor() {
-      this.engineVersion = '2026-09-08.10.23-preview-source-letter-pdf';
+      this.engineVersion = '2026-09-08.10.24-letter-native-scale-pdf';
       this.criticalMarkers = [
         '{{NUMERO DE CONSECUTIVO}}',
         '{{NOMBRE DE LA PERSONA}}',
@@ -283,10 +283,11 @@
     }
 
     async toPdf(docxBuffer, previewHtml = null) {
-      // V10.23: el PDF usa EXACTAMENTE el mismo HTML que se entrega a la vista previa.
-      // No se vuelve a renderizar el DOCX dentro de un contenedor de ancho forzado,
-      // porque eso podía modificar el ancho de tablas, desplazar el logo y deformar texto.
-      // La captura conserva su relación de aspecto y únicamente se ajusta dentro de Carta.
+      // V10.24: la fuente del PDF se normaliza primero a la dimensión física REAL
+      // de una hoja Carta (8.5 x 11 in a 96 dpi = 816 x 1056 CSS px).
+      // Después se captura a 3x (~288 dpi). De esta forma el PDF ocupa toda la hoja
+      // sin estirar letras, logo, tablas o firma y sin depender de la altura accidental
+      // que el navegador pueda asignar al SECTION de docx-preview.
       const html2canvas = await this.ensureHtml2Canvas();
       const jsPDF = await this.ensureJsPdf();
       if (typeof html2canvas !== 'function' || !jsPDF) {
@@ -295,12 +296,14 @@
 
       const LETTER_W_MM = 215.9;
       const LETTER_H_MM = 279.4;
-      const LETTER_RATIO = LETTER_W_MM / LETTER_H_MM;
+      const LETTER_W_PX = 816;   // 8.5 in * 96 dpi
+      const LETTER_H_PX = 1056; // 11 in * 96 dpi
+      const BODY_PAD_PX = 20;
       const html = previewHtml || await this.toHtml(docxBuffer);
 
-      // Se monta el MISMO HTML de la vista previa en un iframe fuera de pantalla.
-      // Un viewport holgado evita que el layout institucional se comprima por el ancho
-      // de un contenedor auxiliar. srcdoc mantiene el documento aislado y reproducible.
+      // El iframe usa exactamente el ancho físico de Carta más el padding que utiliza
+      // la vista previa. Evitamos un viewport excesivamente ancho (como 1400 px), que
+      // podía alterar la composición de tablas y producir una página visual muy angosta.
       const frame = document.createElement('iframe');
       frame.setAttribute('aria-hidden', 'true');
       frame.setAttribute('tabindex', '-1');
@@ -308,8 +311,8 @@
         position:'fixed',
         left:'-12000px',
         top:'0',
-        width:'1400px',
-        height:'1800px',
+        width:`${LETTER_W_PX + BODY_PAD_PX * 2}px`,
+        height:`${LETTER_H_PX + BODY_PAD_PX * 2}px`,
         border:'0',
         background:'#ffffff',
         pointerEvents:'none',
@@ -341,6 +344,28 @@
         const frameWin = frame.contentWindow;
         if (!frameDoc || !frameWin) throw new Error('No fue posible abrir la vista previa interna para PDF.');
 
+        // Normalización estricta de la página, no del contenido. Esto NO recentra ni
+        // recorta el logo: conserva (0,0) y obliga únicamente al papel a ser Carta.
+        const captureStyle = frameDoc.createElement('style');
+        captureStyle.setAttribute('data-sst-pdf-capture', 'v10.24');
+        captureStyle.textContent = `
+          html, body { margin:0 !important; background:#fff !important; }
+          body { padding:${BODY_PAD_PX}px !important; }
+          .sst-docx-wrapper { margin:0 !important; padding:0 !important; background:#fff !important; }
+          .sst-docx-wrapper > section.sst-docx,
+          section.sst-docx {
+            width:${LETTER_W_PX}px !important;
+            min-width:${LETTER_W_PX}px !important;
+            max-width:${LETTER_W_PX}px !important;
+            height:${LETTER_H_PX}px !important;
+            min-height:${LETTER_H_PX}px !important;
+            max-height:${LETTER_H_PX}px !important;
+            box-sizing:border-box !important;
+            overflow:hidden !important;
+          }
+        `;
+        frameDoc.head.appendChild(captureStyle);
+
         if (frameDoc.fonts?.ready) {
           try { await frameDoc.fonts.ready; } catch (_) {}
         }
@@ -356,22 +381,25 @@
 
         for (let index = 0; index < pages.length; index++) {
           const page = pages[index];
-          const rect = page.getBoundingClientRect();
-          const captureWidth = Math.max(1, Math.ceil(rect.width || page.offsetWidth || page.scrollWidth));
-          const captureHeight = Math.max(1, Math.ceil(rect.height || page.offsetHeight || page.scrollHeight));
+
+          // Espera una última composición después de fijar el papel a Carta. Esto ayuda
+          // especialmente a imágenes en encabezado (logo) y tablas con ancho porcentual.
+          await new Promise((resolve) => frameWin.requestAnimationFrame(resolve));
 
           const canvas = await html2canvas(page, {
-            scale: 2.35,
+            scale: 3,
             useCORS: true,
             allowTaint: false,
             logging: false,
             backgroundColor: '#ffffff',
             scrollX: 0,
             scrollY: 0,
-            width: captureWidth,
-            height: captureHeight,
-            windowWidth: Math.max(1200, Math.ceil(frameDoc.documentElement.scrollWidth || 1400)),
-            windowHeight: Math.max(1500, Math.ceil(frameDoc.documentElement.scrollHeight || captureHeight))
+            width: LETTER_W_PX,
+            height: LETTER_H_PX,
+            windowWidth: LETTER_W_PX + BODY_PAD_PX * 2,
+            windowHeight: LETTER_H_PX + BODY_PAD_PX * 2,
+            imageTimeout: 20000,
+            removeContainer: true
           });
           if (!canvas.width || !canvas.height) {
             throw new Error(`La página ${index + 1} quedó vacía durante el renderizado.`);
@@ -379,23 +407,10 @@
 
           if (index > 0) pdf.addPage('letter', 'portrait');
 
-          // Nunca se estira la captura para llenar Carta. Se conserva la proporción
-          // exacta de la vista previa y se ancla en (0,0). Si existe una diferencia
-          // mínima de relación de aspecto, queda únicamente una franja blanca residual.
-          const sourceRatio = canvas.width / canvas.height;
-          let drawW;
-          let drawH;
-          if (sourceRatio >= LETTER_RATIO) {
-            drawW = LETTER_W_MM;
-            drawH = drawW / sourceRatio;
-          } else {
-            drawH = LETTER_H_MM;
-            drawW = drawH * sourceRatio;
-          }
-
-          // PNG evita artefactos JPEG alrededor de letras, bordes y del logo corporativo.
+          // Como el canvas ya tiene exactamente la proporción Carta, se inserta 1:1.
+          // No se calcula otro factor de escala y, por tanto, no existe estiramiento.
           const imageData = canvas.toDataURL('image/png');
-          pdf.addImage(imageData, 'PNG', 0, 0, drawW, drawH, undefined, 'FAST');
+          pdf.addImage(imageData, 'PNG', 0, 0, LETTER_W_MM, LETTER_H_MM, undefined, 'FAST');
         }
 
         const blob = pdf.output('blob');

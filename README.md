@@ -1,4 +1,13 @@
-# Portal SST · Recomendaciones Médicas V10.19
+# Portal SST · Recomendaciones Médicas V10.24
+
+## V10.24 · Escala Carta nativa sin pérdida de proporción
+
+- La captura PDF se fija a la dimensión física de Carta: 816 × 1056 CSS px (8.5 × 11 in a 96 dpi).
+- Renderiza a escala 3x (~288 dpi) y usa PNG para conservar nitidez de texto, bordes, logo y firma.
+- El PDF inserta la página 1:1 en 215.9 × 279.4 mm; ya no calcula una escala a partir de una altura accidental del navegador.
+- Corrige el documento angosto dentro de la hoja sin estirar letras ni cambiar la posición del logo.
+- Conserva firma/nombre/cargo a la izquierda, paginación 1:1, Word, IA, zonas, correo, consecutivos y backend V10.16.
+- El nuevo motor `2026-09-08.10.24-letter-native-scale-pdf` invalida la caché anterior.
 
 ## V10.23 · PDF idéntico a la vista previa, sin estirar
 
