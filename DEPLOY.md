@@ -1,4 +1,4 @@
-# Despliegue V10.18
+# Despliegue V10.19
 
 1. Reemplaza en GitHub los archivos del portal con el contenido de esta carpeta.
 2. **No es necesario volver a desplegar Apps Script** si ya reporta `2026.09.07-v10.16-exam-type-auto-zone`.

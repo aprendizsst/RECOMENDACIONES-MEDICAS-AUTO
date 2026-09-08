@@ -1,6 +1,6 @@
-# Portal SST · Recomendaciones Médicas V10.18
+# Portal SST · Recomendaciones Médicas V10.19
 
-V10.18 conserva íntegramente V10.17 y añade dos mejoras de presentación sin modificar el pipeline clínico, IA, zonas, correo ni Apps Script.
+V10.19 conserva íntegramente V10.17 y añade dos mejoras de presentación sin modificar el pipeline clínico, IA, zonas, correo ni Apps Script.
 
 ## PDF fiel a la vista previa
 

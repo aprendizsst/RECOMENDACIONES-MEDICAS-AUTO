@@ -143,7 +143,7 @@
 
   class DocxEngine {
     constructor() {
-      this.engineVersion = '2026-09-08.10.18-preview-faithful-pdf';
+      this.engineVersion = '2026-09-08.10.19-preview-faithful-pdf';
       this.criticalMarkers = [
         '{{NUMERO DE CONSECUTIVO}}',
         '{{NOMBRE DE LA PERSONA}}',
@@ -213,16 +213,30 @@
       return window.docx;
     }
 
-    async ensureHtml2Pdf() {
+    async ensureHtml2Canvas() {
       await this._loadScript(
-        () => typeof window.html2pdf === 'function',
+        () => typeof window.html2canvas === 'function',
         [
-          'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js',
-          'https://unpkg.com/html2pdf.js@0.10.1/dist/html2pdf.bundle.min.js'
+          'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js',
+          'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js',
+          'https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js'
         ],
-        'html2pdf'
+        'html2canvas'
       );
-      return window.html2pdf;
+      return window.html2canvas;
+    }
+
+    async ensureJsPdf() {
+      await this._loadScript(
+        () => !!(window.jspdf?.jsPDF || window.jsPDF),
+        [
+          'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js',
+          'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js',
+          'https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js'
+        ],
+        'jsPDF'
+      );
+      return window.jspdf?.jsPDF || window.jsPDF;
     }
 
     async renderGeneratedDocx(docxBuffer, bodyContainer, styleContainer = null) {
@@ -259,12 +273,12 @@
       // de docx-preview que usa la vista previa. Así se evita que html2pdf vuelva
       // a paginar el documento y corte bloques, omita páginas o cambie los saltos.
       await this.ensurePreviewRenderer();
-      await this.ensureHtml2Pdf(); // El bundle expone html2canvas + jsPDF.
-
-      const html2canvas = window.html2canvas;
-      const jsPDF = window.jspdf?.jsPDF || window.jsPDF;
+      // V10.19: html2pdf.bundle NO garantiza publicar html2canvas en window.
+      // Cargamos cada dependencia explícitamente y con tres CDN de respaldo.
+      const html2canvas = await this.ensureHtml2Canvas();
+      const jsPDF = await this.ensureJsPdf();
       if (typeof html2canvas !== 'function' || !jsPDF) {
-        throw new Error('No fue posible cargar el renderizador PDF completo (html2canvas/jsPDF).');
+        throw new Error('No fue posible inicializar el renderizador PDF (html2canvas/jsPDF).');
       }
 
       const host = document.createElement('div');
