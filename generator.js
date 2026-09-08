@@ -117,7 +117,7 @@
       body.format = format;
       body.templateHash = assets.template?.hash || 'default-template-v1';
       body.signatureHash = assets.signature?.hash || '';
-      body.documentEngineVersion = SSTDocx.engineVersion || 'template-engine-v10.19';
+      body.documentEngineVersion = SSTDocx.engineVersion || 'template-engine-v10.20';
       return SSTUtils.sha256Text(JSON.stringify(body));
     }
 
@@ -154,8 +154,8 @@
 
     async generatePdf(data, signatureAsset) {
       const jsPDF = await this.ensureJsPdf();
-      const doc = new jsPDF({ unit: 'mm', format: 'a4', compress: true });
-      const pageW = 210, pageH = 297, left = 20, right = 20, bottom = 20, maxW = pageW - left - right;
+      const doc = new jsPDF({ unit: 'mm', format: 'letter', compress: true });
+      const pageW = 215.9, pageH = 279.4, left = 16, right = 16, bottom = 16, maxW = pageW - left - right;
       let y = 18;
       const check = (needed = 8) => { if (y + needed > pageH - bottom) { doc.addPage(); y = 20; } };
       const text = (value, opts = {}) => {
@@ -281,7 +281,7 @@
         templateName:assets.template?.name || 'Plantilla base incluida',
         templateHash:assets.template?.hash || 'default-template-v1',
         templateValidation:prepared.validation,
-        documentEngineVersion:SSTDocx.engineVersion || 'template-engine-v10.19'
+        documentEngineVersion:SSTDocx.engineVersion || 'template-engine-v10.20'
       };
       if (persist) await SSTDB.put(SSTDB.stores.outputs, output);
       return { output, reused:false };

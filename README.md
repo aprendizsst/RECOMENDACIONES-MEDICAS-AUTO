@@ -26,3 +26,13 @@ V10.19 conserva íntegramente V10.17 y añade dos mejoras de presentación sin m
 Se mantienen todas las funciones de V10.17: tipos de examen canónicos, zona automática por lugar, JER_TABLA/CONTROL_PERIODICO, estados REALIZADO, auditoría IA y recuperación, hasta 50 PDF, recomendaciones compactas, Word/PDF, visor original, correo individual/común/por zona, PDF/Word/ambos, consecutivos y Google Sheets.
 
 Backend requerido: `2026.09.07-v10.16-exam-type-auto-zone`. No requiere cambios de Apps Script.
+
+
+## V10.20 · PDF Carta fiel a la plantilla
+
+- PDF fijo en tamaño Carta (8.5 × 11 pulgadas).
+- La paginación sigue siendo 1:1 con la vista previa DOCX.
+- Corrige el exceso de margen lateral causado por el contenedor oculto de renderizado.
+- No se agrega un segundo margen al insertar la página en el PDF.
+- Captura a mayor resolución para mejorar texto, bordes, logos y firma.
+- Se conservan sin cambios IA, parser clínico, zonas, correo, consecutivos y backend V10.16.

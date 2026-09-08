@@ -8,9 +8,9 @@
   <title>Portal SST · Recomendaciones Médicas</title>
   <link rel="preconnect" href="https://cdnjs.cloudflare.com" />
   <link rel="preconnect" href="https://cdn.jsdelivr.net" />
-  <link rel="icon" href="./assets/icon.svg?v=20260908-1019" type="image/svg+xml" />
-  <link rel="manifest" href="./manifest.webmanifest?v=20260908-1019" />
-  <link rel="stylesheet" href="./styles.css?v=20260908-1019" />
+  <link rel="icon" href="./assets/icon.svg?v=20260908-1020" type="image/svg+xml" />
+  <link rel="manifest" href="./manifest.webmanifest?v=20260908-1020" />
+  <link rel="stylesheet" href="./styles.css?v=20260908-1020" />
 </head>
 <body>
   <div id="appBoot" class="boot-screen">
@@ -347,7 +347,7 @@
 
             <section class="panel"><div class="panel-head"><div><span class="eyebrow">FIRMA</span><h3>Firma autorizada</h3></div><span id="signatureStatus" class="status-badge">Sin firma</span></div><input id="signatureInput" type="file" accept="image/png,image/jpeg" hidden /><button id="btnUploadSignature" class="upload-card"><span>✎</span><div><strong>Cargar firma PNG/JPG</strong><small id="signatureFileName">Se insertará antes del coordinador SST</small></div></button><div id="signaturePreview" class="signature-preview hidden"></div><button id="btnRemoveSignature" class="btn ghost">Quitar firma</button></section>
 
-            <section class="panel"><div class="panel-head"><div><span class="eyebrow">GENERACIÓN</span><h3>Preferencias</h3></div></div><label><span>Formato de salida por defecto</span><select id="settingsOutputFormat"><option value="PDF">PDF</option><option value="Word">Word (.docx)</option><option value="HTML">HTML</option></select></label><label class="switch-row"><div><strong>OCR automático</strong><small>Se activa en páginas con poco texto extraíble.</small></div><input id="toggleOcr" type="checkbox" /></label><button id="btnSavePreferences" class="btn primary full">Guardar preferencias</button></section>
+            <section class="panel"><div class="panel-head"><div><span class="eyebrow">GENERACIÓN</span><h3>Preferencias</h3></div></div><label><span>Formato de salida por defecto</span><select id="settingsOutputFormat"><option value="PDF">PDF · Carta (8.5 × 11 in)</option><option value="Word">Word (.docx)</option><option value="HTML">HTML</option></select></label><label class="switch-row"><div><strong>OCR automático</strong><small>Se activa en páginas con poco texto extraíble.</small></div><input id="toggleOcr" type="checkbox" /></label><button id="btnSavePreferences" class="btn primary full">Guardar preferencias</button></section>
 
             <section class="panel"><div class="panel-head"><div><span class="eyebrow">CUENTA</span><h3>Seguridad</h3></div></div><label><span>Contraseña actual</span><input id="settingsOldPassword" type="password" /></label><label><span>Nueva contraseña</span><input id="settingsNewPassword" type="password" /></label><button id="btnChangePasswordLogged" class="btn secondary full">Cambiar contraseña</button><button id="btnClearLocalData" class="btn danger full">Borrar caché local del navegador</button></section>
           </div>
@@ -366,15 +366,15 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script src="https://cdn.jsdelivr.net/pyodide/v0.27.7/full/pyodide.js"></script>
-  <script src="./config.js?v=20260908-1019"></script>
-  <script src="./utils.js?v=20260908-1019"></script>
-  <script src="./db.js?v=20260908-1019"></script>
-  <script src="./backend.js?v=20260908-1019"></script>
-  <script src="./profile-engine.js?v=20260908-1019"></script>
-  <script src="./parser-bridge.js?v=20260908-1019"></script>
-  <script src="./pdf-service.js?v=20260908-1019"></script>
-  <script src="./docx-engine.js?v=20260908-1019"></script>
-  <script src="./generator.js?v=20260908-1019"></script>
-  <script src="./app.js?v=20260908-1019"></script>
+  <script src="./config.js?v=20260908-1020"></script>
+  <script src="./utils.js?v=20260908-1020"></script>
+  <script src="./db.js?v=20260908-1020"></script>
+  <script src="./backend.js?v=20260908-1020"></script>
+  <script src="./profile-engine.js?v=20260908-1020"></script>
+  <script src="./parser-bridge.js?v=20260908-1020"></script>
+  <script src="./pdf-service.js?v=20260908-1020"></script>
+  <script src="./docx-engine.js?v=20260908-1020"></script>
+  <script src="./generator.js?v=20260908-1020"></script>
+  <script src="./app.js?v=20260908-1020"></script>
 </body>
 </html>

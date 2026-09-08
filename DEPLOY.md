@@ -14,3 +14,13 @@
 - La cantidad y el orden de páginas coinciden con la vista previa.
 - El PDF conserva encabezado, pie, logos y márgenes de la plantilla renderizada.
 - Word, correo, zonas, consecutivos e IA continúan funcionando como en V10.17.
+
+
+## V10.20 · PDF Carta fiel a la plantilla
+
+- PDF fijo en tamaño Carta (8.5 × 11 pulgadas).
+- La paginación sigue siendo 1:1 con la vista previa DOCX.
+- Corrige el exceso de margen lateral causado por el contenedor oculto de renderizado.
+- No se agrega un segundo margen al insertar la página en el PDF.
+- Captura a mayor resolución para mejorar texto, bordes, logos y firma.
+- Se conservan sin cambios IA, parser clínico, zonas, correo, consecutivos y backend V10.16.

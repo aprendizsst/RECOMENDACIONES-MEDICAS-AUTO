@@ -143,7 +143,7 @@
 
   class DocxEngine {
     constructor() {
-      this.engineVersion = '2026-09-08.10.19-preview-faithful-pdf';
+      this.engineVersion = '2026-09-08.10.20-letter-faithful-pdf';
       this.criticalMarkers = [
         '{{NUMERO DE CONSECUTIVO}}',
         '{{NOMBRE DE LA PERSONA}}',
@@ -269,27 +269,34 @@
     }
 
     async toPdf(docxBuffer) {
-      // V10.18: el PDF se construye página por página a partir del MISMO render
-      // de docx-preview que usa la vista previa. Así se evita que html2pdf vuelva
-      // a paginar el documento y corte bloques, omita páginas o cambie los saltos.
+      // V10.20: PDF institucional en tamaño CARTA (8.5 × 11 in).
+      // La plantilla base ya está configurada en Carta. El PDF usa exactamente
+      // la misma página producida por docx-preview y NO vuelve a paginar texto.
+      // Cada SECTION renderizada equivale a una página del PDF.
       await this.ensurePreviewRenderer();
-      // V10.19: html2pdf.bundle NO garantiza publicar html2canvas en window.
-      // Cargamos cada dependencia explícitamente y con tres CDN de respaldo.
       const html2canvas = await this.ensureHtml2Canvas();
       const jsPDF = await this.ensureJsPdf();
       if (typeof html2canvas !== 'function' || !jsPDF) {
         throw new Error('No fue posible inicializar el renderizador PDF (html2canvas/jsPDF).');
       }
 
+      const LETTER_W_MM = 215.9;
+      const LETTER_H_MM = 279.4;
+      const LETTER_RATIO = 8.5 / 11;
+
       const host = document.createElement('div');
       host.setAttribute('aria-hidden', 'true');
       Object.assign(host.style, {
-        position:'fixed', left:'-100000px', top:'0', width:'1100px',
-        background:'#e9eef5', zIndex:'-9999', pointerEvents:'none',
-        overflow:'visible'
+        position:'fixed', left:'-100000px', top:'0',
+        // 816 px = 8.5 in a 96 dpi. El ancho Carta evita que el wrapper oculto
+        // ensanche artificialmente la SECTION durante la captura.
+        width:'816px', minWidth:'816px', maxWidth:'816px',
+        background:'#ffffff', zIndex:'-9999', pointerEvents:'none',
+        overflow:'visible', margin:'0', padding:'0'
       });
       const styles = document.createElement('div');
       const body = document.createElement('div');
+      Object.assign(body.style, { width:'816px', margin:'0', padding:'0' });
       host.appendChild(styles);
       host.appendChild(body);
       document.body.appendChild(host);
@@ -306,13 +313,77 @@
         }));
       };
 
+      // Normaliza únicamente el lienzo de captura. No recorta contenido clínico:
+      // cuando docx-preview deja un wrapper lateral extra, se elimina solo la franja
+      // blanca exterior hasta recuperar la relación física de una hoja Carta.
+      const normalizeLetterCanvas = (source) => {
+        if (!source?.width || !source?.height) return source;
+        const sourceRatio = source.width / source.height;
+        const targetWidthFromHeight = Math.round(source.height * LETTER_RATIO);
+
+        // Caso esperado: la captura quedó más ancha que una hoja Carta por el wrapper.
+        if (sourceRatio > LETTER_RATIO * 1.015 && targetWidthFromHeight < source.width) {
+          const ctx = source.getContext('2d', { willReadFrequently:true });
+          let minX = source.width, maxX = -1;
+          try {
+            const step = Math.max(2, Math.round(source.width / 900));
+            const pixels = ctx.getImageData(0, 0, source.width, source.height).data;
+            for (let y = 0; y < source.height; y += step) {
+              for (let x = 0; x < source.width; x += step) {
+                const i = (y * source.width + x) * 4;
+                const a = pixels[i + 3];
+                const r = pixels[i], g = pixels[i + 1], b = pixels[i + 2];
+                // Detecta trazos/texto/bordes y evita considerar como contenido el blanco.
+                if (a > 20 && (r < 245 || g < 245 || b < 245)) {
+                  if (x < minX) minX = x;
+                  if (x > maxX) maxX = x;
+                }
+              }
+            }
+          } catch (_) {
+            // Si un navegador impide leer píxeles del canvas, se conserva un
+            // recorte geométrico centrado; la generación PDF no debe bloquearse.
+          }
+
+          const contentCenter = maxX >= minX ? (minX + maxX) / 2 : source.width / 2;
+          let sx = Math.round(contentCenter - targetWidthFromHeight / 2);
+          sx = Math.max(0, Math.min(source.width - targetWidthFromHeight, sx));
+
+          const normalized = document.createElement('canvas');
+          normalized.width = targetWidthFromHeight;
+          normalized.height = source.height;
+          const nctx = normalized.getContext('2d');
+          nctx.fillStyle = '#ffffff';
+          nctx.fillRect(0, 0, normalized.width, normalized.height);
+          nctx.drawImage(source, sx, 0, targetWidthFromHeight, source.height, 0, 0, normalized.width, normalized.height);
+          return normalized;
+        }
+
+        // Si el lienzo resultó apenas más estrecho, se rellena con blanco en vez de
+        // recortar verticalmente, para no perder encabezados, firmas ni pie de página.
+        if (sourceRatio < LETTER_RATIO * 0.985) {
+          const targetWidth = Math.round(source.height * LETTER_RATIO);
+          const normalized = document.createElement('canvas');
+          normalized.width = targetWidth;
+          normalized.height = source.height;
+          const nctx = normalized.getContext('2d');
+          nctx.fillStyle = '#ffffff';
+          nctx.fillRect(0, 0, normalized.width, normalized.height);
+          const dx = Math.round((targetWidth - source.width) / 2);
+          nctx.drawImage(source, dx, 0);
+          return normalized;
+        }
+
+        return source;
+      };
+
       try {
         await this.renderGeneratedDocx(docxBuffer, body, styles);
         if (document.fonts?.ready) {
           try { await document.fonts.ready; } catch (_) {}
         }
         await waitForImages(body);
-        // Dos frames garantizan que docx-preview termine tamaños, saltos y cabeceras.
+        // Espera dos frames para que docx-preview cierre medidas, saltos y cabeceras.
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 
         let pages = [...body.querySelectorAll('.sst-docx-wrapper > section.sst-docx')];
@@ -320,38 +391,40 @@
         if (!pages.length) pages = [...body.querySelectorAll('.sst-docx')].filter((el) => el.tagName === 'SECTION');
         if (!pages.length) throw new Error('La vista previa no produjo páginas renderizables.');
 
-        const pdf = new jsPDF({ unit:'mm', format:'a4', orientation:'portrait', compress:true });
-        const pageW = 210;
-        const pageH = 297;
+        const pdf = new jsPDF({ unit:'mm', format:'letter', orientation:'portrait', compress:true });
 
         for (let index = 0; index < pages.length; index++) {
           const page = pages[index];
-          // No se usan reglas automáticas de page-break: cada SECTION ya es una página
-          // real de la vista previa DOCX.
-          const canvas = await html2canvas(page, {
-            scale: 2,
+          const rect = page.getBoundingClientRect();
+          const captureWidth = Math.max(1, Math.ceil(rect.width || page.offsetWidth || 816));
+          const captureHeight = Math.max(1, Math.ceil(rect.height || page.offsetHeight || 1056));
+
+          // 2.4x mejora notablemente texto, logos y firma sin disparar tanto el peso
+          // como PNG de alta resolución en lotes grandes.
+          const rawCanvas = await html2canvas(page, {
+            scale: 2.4,
             useCORS: true,
             allowTaint: false,
             logging: false,
             backgroundColor: '#ffffff',
             scrollX: 0,
             scrollY: 0,
-            windowWidth: Math.max(host.scrollWidth, page.scrollWidth, 1100),
-            windowHeight: Math.max(page.scrollHeight, 1200)
+            width: captureWidth,
+            height: captureHeight,
+            windowWidth: 816,
+            windowHeight: Math.max(captureHeight, 1056)
           });
-          if (!canvas.width || !canvas.height) throw new Error(`La página ${index + 1} quedó vacía durante el renderizado.`);
+          if (!rawCanvas.width || !rawCanvas.height) {
+            throw new Error(`La página ${index + 1} quedó vacía durante el renderizado.`);
+          }
 
-          if (index > 0) pdf.addPage('a4', 'portrait');
+          const canvas = normalizeLetterCanvas(rawCanvas);
+          if (index > 0) pdf.addPage('letter', 'portrait');
 
-          // Ajuste proporcional: nunca se recorta. Si la plantilla tiene una relación
-          // ligeramente distinta a A4, se centra dejando margen blanco mínimo.
-          const ratio = Math.min(pageW / canvas.width, pageH / canvas.height);
-          const drawW = canvas.width * ratio;
-          const drawH = canvas.height * ratio;
-          const x = (pageW - drawW) / 2;
-          const y = (pageH - drawH) / 2;
-          const imageData = canvas.toDataURL('image/jpeg', 0.96);
-          pdf.addImage(imageData, 'JPEG', x, y, drawW, drawH, undefined, 'FAST');
+          // La imagen ya contiene los márgenes propios de Word. Se coloca a sangre
+          // sobre la hoja Carta para no agregar un segundo juego de márgenes blancos.
+          const imageData = canvas.toDataURL('image/jpeg', 0.985);
+          pdf.addImage(imageData, 'JPEG', 0, 0, LETTER_W_MM, LETTER_H_MM, undefined, 'FAST');
         }
 
         const blob = pdf.output('blob');
