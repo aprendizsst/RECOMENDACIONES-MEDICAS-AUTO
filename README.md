@@ -1,4 +1,15 @@
-# Portal SST · Recomendaciones Médicas V10.24
+# Portal SST · Recomendaciones Médicas V10.25
+
+## V10.25 · Encabezado protegido y escala Carta sin reflow
+
+- El PDF deja de forzar `width`, `height`, `box-sizing` u `overflow` sobre las páginas de `docx-preview`.
+- Se conserva exactamente la geometría de la vista previa: logo, CÓDIGO, VERSIÓN, FECHA, PÁGINA, ASUNTO y Consecutivo no se reposicionan durante la conversión.
+- La relación Carta se aplica al lienzo de captura, no al DOM del Word. Así se evita que el Consecutivo se superponga con los campos del encabezado.
+- La anchura nativa de la página determina la escala; una altura accidentalmente mayor del navegador ya no reduce el documento dentro del PDF.
+- El lienzo final mantiene proporción Carta y copia el contenido desde `(0,0)` sin estirar ni recentrar.
+- Se mantiene salida PNG de alta resolución (~300 dpi) para conservar nitidez de texto, bordes, logo y firma.
+- Motor documental: `2026-09-08.10.25-letter-layout-safe-pdf`.
+
 
 ## V10.24 · Escala Carta nativa sin pérdida de proporción
 

@@ -1,4 +1,13 @@
-# Despliegue V10.24
+# Despliegue V10.25
+
+## V10.25 · Corrección final de encabezado y escala PDF
+
+- No cambia Apps Script ni el backend.
+- El PDF ya no modifica la geometría interna renderizada por Word/docx-preview.
+- Se protege el encabezado completo: logo, código, versión, fecha, página, asunto y consecutivo.
+- El tamaño Carta se aplica al canvas final, manteniendo la proporción y la calidad del contenido.
+- Motor: `2026-09-08.10.25-letter-layout-safe-pdf`.
+
 
 ## V10.24 · Escala Carta nativa sin pérdida de proporción
 
