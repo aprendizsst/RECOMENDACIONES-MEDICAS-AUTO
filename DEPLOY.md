@@ -1,12 +1,21 @@
-# Despliegue V10.25
+# Despliegue V10.26
 
-## V10.25 · Corrección final de encabezado y escala PDF
+## V10.26 · Bloque de firma protegido y salto de página seguro
+
+- Reduce el espacio posterior a **Atentamente,** de la plantilla al usar firma digital.
+- Mantiene juntos **Atentamente + firma + nombre + cargo** mediante propiedades de paginación Word.
+- La firma conserva proporción, alineación izquierda y una altura máxima segura.
+- No modifica la solución V10.25 del encabezado, escala Carta ni las funciones de IA, zonas, correo o consecutivos.
+- Motor: `2026-09-09.10.26-signature-page-safe-pdf`.
+
+
+## V10.26 · Corrección final de encabezado y escala PDF
 
 - No cambia Apps Script ni el backend.
 - El PDF ya no modifica la geometría interna renderizada por Word/docx-preview.
 - Se protege el encabezado completo: logo, código, versión, fecha, página, asunto y consecutivo.
 - El tamaño Carta se aplica al canvas final, manteniendo la proporción y la calidad del contenido.
-- Motor: `2026-09-08.10.25-letter-layout-safe-pdf`.
+- Motor: `2026-09-09.10.26-signature-page-safe-pdf`.
 
 
 ## V10.24 · Escala Carta nativa sin pérdida de proporción

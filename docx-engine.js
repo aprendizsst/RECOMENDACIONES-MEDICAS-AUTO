@@ -46,6 +46,45 @@
     return paragraph;
   }
 
+
+  function ensureParagraphProperties(doc, paragraph) {
+    if (!paragraph) return null;
+    let pPr = [...paragraph.childNodes].find((n) => n.nodeType === 1 && n.namespaceURI === WNS && n.localName === 'pPr');
+    if (!pPr) {
+      pPr = doc.createElementNS(WNS, 'w:pPr');
+      paragraph.insertBefore(pPr, paragraph.firstChild);
+    }
+    return pPr;
+  }
+
+  function setParagraphSpacing(doc, paragraph, { before = null, after = null, line = null, lineRule = null } = {}) {
+    const pPr = ensureParagraphProperties(doc, paragraph);
+    if (!pPr) return paragraph;
+    let spacing = [...pPr.childNodes].find((n) => n.nodeType === 1 && n.namespaceURI === WNS && n.localName === 'spacing');
+    if (!spacing) {
+      spacing = doc.createElementNS(WNS, 'w:spacing');
+      pPr.appendChild(spacing);
+    }
+    if (before !== null) spacing.setAttributeNS(WNS, 'w:before', String(before));
+    if (after !== null) spacing.setAttributeNS(WNS, 'w:after', String(after));
+    if (line !== null) spacing.setAttributeNS(WNS, 'w:line', String(line));
+    if (lineRule !== null) spacing.setAttributeNS(WNS, 'w:lineRule', String(lineRule));
+    return paragraph;
+  }
+
+  function setParagraphPagination(doc, paragraph, { keepNext = false, keepLines = false, widowControl = true } = {}) {
+    const pPr = ensureParagraphProperties(doc, paragraph);
+    if (!pPr) return paragraph;
+    const setFlag = (localName, enabled) => {
+      [...pPr.childNodes].filter((n) => n.nodeType === 1 && n.namespaceURI === WNS && n.localName === localName).forEach((n) => pPr.removeChild(n));
+      if (enabled) pPr.appendChild(doc.createElementNS(WNS, `w:${localName}`));
+    };
+    setFlag('keepNext', keepNext);
+    setFlag('keepLines', keepLines);
+    setFlag('widowControl', widowControl);
+    return paragraph;
+  }
+
   function cloneParagraph(doc, source, text, opts = {}) {
     const clone = source.cloneNode(true);
     setPText(doc, clone, text, opts);
@@ -157,7 +196,7 @@
 
   class DocxEngine {
     constructor() {
-      this.engineVersion = '2026-09-08.10.25-letter-layout-safe-pdf';
+      this.engineVersion = '2026-09-09.10.26-signature-page-safe-pdf';
       this.criticalMarkers = [
         '{{NUMERO DE CONSECUTIVO}}',
         '{{NOMBRE DE LA PERSONA}}',
@@ -561,11 +600,46 @@
         zip.file(partName, serializeXml(partDoc));
       }
 
-      // V10.22: el bloque de firma debe conservarse alineado al margen izquierdo
-      // tanto en Word como en docx-preview; el PDF hereda exactamente esta posición.
+      // V10.26: además de conservar la firma a la izquierda, protege el cierre
+      // del documento para que Atentamente + firma + nombre + cargo no se separen
+      // ni queden cortados en el borde inferior de una página.
+      await this._prepareSignaturePagination(zip);
       await this._alignCoordinatorBlockLeft(zip);
       if (signatureAsset?.blob) await this._insertSignature(zip, signatureAsset.blob);
       return zip.generateAsync({ type: 'arraybuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
+    }
+
+
+    async _prepareSignaturePagination(zip) {
+      const docPath = 'word/document.xml';
+      const file = zip.file(docPath);
+      if (!file) return;
+      const wordDoc = parseXml(await file.async('string'));
+      const normalize = (value) => String(value || '')
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase().replace(/\s+/g, ' ').trim();
+      const paragraphs = [...wordDoc.getElementsByTagNameNS(WNS, 'p')];
+      const atentamente = paragraphs.find((p) => normalize(pText(p)).startsWith('ATENTAMENTE'));
+      const nombre = paragraphs.find((p) => normalize(pText(p)).includes('VICTOR ALONSO MORENO CASAS'));
+      const cargo = paragraphs.find((p) => /\bCOORDINADOR\s+SST\b/.test(normalize(pText(p))));
+
+      // La plantilla original reservaba 48 pt después de “Atentamente,” para firma
+      // manual. Con firma digital ese hueco duplica el espacio y empuja el bloque
+      // fuera de la página. Se deja solo una separación breve y controlada.
+      if (atentamente) {
+        setParagraphSpacing(wordDoc, atentamente, { before:0, after:120, line:252, lineRule:'auto' });
+        setParagraphPagination(wordDoc, atentamente, { keepNext:true, keepLines:true, widowControl:true });
+      }
+      if (nombre) {
+        setParagraphSpacing(wordDoc, nombre, { before:0, after:0, line:252, lineRule:'auto' });
+        setParagraphPagination(wordDoc, nombre, { keepNext:true, keepLines:true, widowControl:true });
+      }
+      if (cargo) {
+        setParagraphSpacing(wordDoc, cargo, { before:0, after:0, line:252, lineRule:'auto' });
+        setParagraphPagination(wordDoc, cargo, { keepNext:false, keepLines:true, widowControl:true });
+      }
+
+      zip.file(docPath, serializeXml(wordDoc));
     }
 
     async _alignCoordinatorBlockLeft(zip) {
@@ -590,8 +664,12 @@
       let ext = /png/i.test(blob.type) ? 'png' : 'jpg';
       const mime = ext === 'png' ? 'image/png' : 'image/jpeg';
       const dims = await imageDimensions(blob);
-      const widthEmu = Math.round(1.6 * 914400);
-      const heightEmu = Math.round(widthEmu * (dims.height / Math.max(1, dims.width)));
+      const maxWidthEmu = Math.round(1.45 * 914400);
+      const maxHeightEmu = Math.round(0.58 * 914400);
+      const naturalHeight = Math.round(maxWidthEmu * (dims.height / Math.max(1, dims.width)));
+      const scale = naturalHeight > maxHeightEmu ? (maxHeightEmu / naturalHeight) : 1;
+      const widthEmu = Math.max(1, Math.round(maxWidthEmu * scale));
+      const heightEmu = Math.max(1, Math.round(naturalHeight * scale));
       const mediaName = `signature_sst.${ext}`;
       zip.file(`word/media/${mediaName}`, await blob.arrayBuffer());
 
@@ -623,7 +701,7 @@
       const target = paragraphs.find((p) => pText(p).toUpperCase().includes('VÍCTOR ALONSO MORENO CASAS')) || paragraphs.find((p) => pText(p).toUpperCase().includes('VICTOR ALONSO MORENO CASAS'));
       if (!target || !target.parentNode) return;
 
-      const drawingXml = `<w:p xmlns:w="${WNS}" xmlns:r="${RNS}" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:pPr><w:jc w:val="left"/></w:pPr><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${widthEmu}" cy="${heightEmu}"/><wp:docPr id="987" name="Firma SST"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="${mediaName}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${relId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${widthEmu}" cy="${heightEmu}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
+      const drawingXml = `<w:p xmlns:w="${WNS}" xmlns:r="${RNS}" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:pPr><w:spacing w:before="0" w:after="0" w:line="252" w:lineRule="auto"/><w:keepNext/><w:keepLines/><w:widowControl/><w:jc w:val="left"/></w:pPr><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${widthEmu}" cy="${heightEmu}"/><wp:docPr id="987" name="Firma SST"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="${mediaName}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${relId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${widthEmu}" cy="${heightEmu}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
       const fragDoc = parseXml(drawingXml);
       const node = wordDoc.importNode(fragDoc.documentElement, true);
       target.parentNode.insertBefore(node, target);
